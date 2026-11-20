@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://discord.gg/nsXbSNfvDy"><img src="https://img.shields.io/badge/Discord-join-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://discord.gg/Vm8vfqznh2"><img src="https://img.shields.io/badge/Discord-join-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord"></a>
   <a href="https://ko-fi.com/anastasiophrenelia"><img src="https://img.shields.io/badge/Ko--fi-support%20the%20project-FF5E5B?style=flat-square&logo=kofi&logoColor=white" alt="Ko-fi"></a>
   <img src="https://img.shields.io/badge/version-10-1b63e0?style=flat-square" alt="Version 10">
   <img src="https://img.shields.io/badge/license-all%20rights%20reserved-555?style=flat-square" alt="License">
@@ -65,6 +65,6 @@ Independent project, not affiliated with or endorsed by Cardmarket.
 <p align="center">
   <b>Links</b><br>
   <a href="https://ko-fi.com/anastasiophrenelia">☕ Support the project on Ko-fi</a> ·
-  <a href="https://discord.gg/nsXbSNfvDy">💬 Discord (support, ideas, card trading)</a> ·
+  <a href="https://discord.gg/Vm8vfqznh2">💬 Discord (support, ideas, card trading)</a> ·
   <a href="../../issues">🐞 Report a bug</a>
 </p>
