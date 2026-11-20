@@ -1,0 +1,3 @@
+Fond : les images des cartes viennent de Cardmarket (les cartes de ta liste), chargées en direct, rien n'est inclus dans l'extension. Sans carte dans la liste, des dos de carte originaux sont affichés.
+
+Polices (fonts/) : Inter, Cinzel, JetBrains Mono — SIL Open Font License (voir fonts/LICENSE-*).

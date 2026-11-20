@@ -1,0 +1,31 @@
+TCG Price Hunter
+Copyright (c) 2026 Nicoco (Anastasiophrenelia) — https://github.com/Anastasiophrenelia/TCG-Price-Hunter
+Tous droits réservés. Auteur et seul titulaire des droits : Nicoco (Anastasiophrenelia).
+
+La publication de ce code sur GitHub ne le place PAS en open source et ne cède
+aucun droit : seuls la consultation et l'usage personnel sont autorisés.
+
+Ce code est publié pour être consulté et pour permettre d'installer
+l'extension sur son propre navigateur, pour un usage personnel.
+
+Sans l'accord écrit de l'auteur, il est interdit de :
+  - copier, modifier ou réutiliser tout ou partie de ce code, des textes,
+    du logo ou du design dans un autre projet ;
+  - redistribuer cette extension ou une version modifiée, gratuitement ou non ;
+  - la publier sur une boutique d'extensions (Firefox Add-ons, Chrome Web Store,
+    Edge Add-ons…) ou ailleurs, sous ce nom ou sous un autre ;
+  - en faire un usage commercial.
+
+Les signalements de bugs et les propositions d'amélioration (issues, pull requests)
+sont les bienvenus ; en en proposant une, vous acceptez qu'elle puisse être intégrée
+au projet sous cette même licence.
+
+Composants tiers inclus, sous leur propre licence :
+  - Polices Inter, Cinzel et JetBrains Mono : SIL Open Font License 1.1
+    (voir fonts/LICENSE-*).
+
+« Cardmarket » est une marque de son propriétaire. Ce projet n'est ni affilié,
+ni soutenu, ni approuvé par Cardmarket.
+
+LE LOGICIEL EST FOURNI « EN L'ÉTAT », SANS GARANTIE D'AUCUNE SORTE. L'AUTEUR NE
+PEUT ÊTRE TENU RESPONSABLE D'AUCUN DOMMAGE LIÉ À SON UTILISATION.

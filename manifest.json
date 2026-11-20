@@ -1,0 +1,73 @@
+{
+  "manifest_version": 3,
+  "name": "TCG Price Hunter - Cardmarket",
+  "version": "10",
+  "description": "Trouve le panier le moins cher sur Cardmarket : scanne les vendeurs de tes cartes TCG et calcule les commandes, frais de port officiels compris.",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "tabs",
+    "scripting",
+    "declarativeNetRequest"
+  ],
+  "host_permissions": [
+    "https://www.cardmarket.com/*",
+    "https://product-images.s3.cardmarket.com/*",
+    "https://help.cardmarket.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "action": {
+    "default_title": "TCG Price Hunter - Cardmarket",
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png",
+      "48": "icons/48.png"
+    }
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "96": "icons/96.png",
+    "128": "icons/128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.cardmarket.com/*/*/Products/*"
+      ],
+      "js": [
+        "i18n.js",
+        "parse.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "tcg-price-hunter@nicoco",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": [
+          "none"
+        ]
+      }
+    }
+  },
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "images_cardmarket",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  },
+  "homepage_url": "https://github.com/Anastasiophrenelia/TCG-Price-Hunter"
+}

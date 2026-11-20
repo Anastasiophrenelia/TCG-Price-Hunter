@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<!--
+  TCG Price Hunter — © 2026 Nicoco (Anastasiophrenelia). Tous droits réservés.
+  https://github.com/Anastasiophrenelia/TCG-Price-Hunter
+  Toute copie, modification ou redistribution sans autorisation écrite de l'auteur est interdite (voir LICENSE).
+-->
+<html lang="fr" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>TCG Price Hunter - Cardmarket</title>
+<link rel="icon" href="icons/32.png">
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="theme.css">
+<script src="theme-init.js"></script>
+</head>
+<body>
+<!-- Décor animé (thème sombre) : halos, grille, braises, cercles runiques, dragon, dés -->
+<div id="bgfx" aria-hidden="true">
+  <div class="fx-scene">
+    <div class="fx-base"></div>
+    <div class="fx-halo fx-blue"></div>
+    <div class="fx-halo fx-amber"></div>
+    <div class="fx-shadow"></div>
+    <div class="fx-grid"></div>
+    <canvas id="fxEmbers"></canvas>
+    <div class="fx-die fx-d20"><svg viewBox="0 0 120 120"><polygon points="60,8 108,35 108,85 60,112 12,85 12,35" fill="#1f283b" stroke="#4b5a7a" stroke-width="1.8"/><polygon points="60,26 93,78 27,78" fill="#151b29" stroke="#64748b" stroke-width="1.5"/><path d="M60 8V26M108 35L60 26M12 35L60 26M108 35L93 78M108 85L93 78M60 112L93 78M60 112L27 78M12 85L27 78M12 35L27 78" stroke="#4b5a7a" stroke-width="1.3"/><circle cx="60" cy="58" r="15" fill="#f59e0b" opacity=".18"/><text x="60" y="64" text-anchor="middle" fill="#fbbf24" font-family="Cinzel, serif" font-weight="800" font-size="17">20</text></svg></div>
+    <div class="fx-die fx-d12"><svg viewBox="0 0 120 120"><polygon points="60,10 98,32 110,74 82,108 38,108 10,74 22,32" fill="#1a2130" stroke="#3b4760" stroke-width="1.8"/><polygon points="60,32 86,51 76,82 44,82 34,51" fill="#121722" stroke="#526382" stroke-width="1.4"/><path d="M60 10V32M98 32L86 51M110 74L76 82M38 108L44 82M22 32L34 51" stroke="#3b4760" stroke-width="1.3"/><text x="60" y="64" text-anchor="middle" fill="#bae6fd" font-family="Cinzel, serif" font-weight="700" font-size="14">12</text></svg></div>
+    <div class="fx-die fx-d8"><svg viewBox="0 0 100 100"><polygon points="50,6 92,50 50,94 8,50" fill="#19202e" stroke="#3b4760" stroke-width="1.8"/><polygon points="50,20 78,50 50,80 22,50" fill="#111621" stroke="#526382" stroke-width="1.3"/><path d="M8 50H92" stroke="#3b4760" stroke-width="1.2"/><text x="50" y="46" text-anchor="middle" fill="#bae6fd" font-family="Cinzel, serif" font-weight="700" font-size="13">8</text></svg></div>
+    <div class="fx-die fx-d4"><svg viewBox="0 0 100 100"><polygon points="50,12 90,82 10,82" fill="#1a2130" stroke="#3b4760" stroke-width="1.8"/><path d="M50 12V62M10 82L50 62M90 82L50 62" stroke="#526382" stroke-width="1.3"/><text x="50" y="56" text-anchor="middle" fill="#fbbf24" font-family="Cinzel, serif" font-weight="700" font-size="12">4</text></svg></div>
+    <div class="fx-card fx-fly b1" style="--y:22%;--dl:-2s;--d:16s"><i></i></div><div class="fx-card fx-fly b2" style="--y:62%;--dl:-10s;--d:19s"><i></i></div>
+    <span class="fx-spark" style="left:12%;top:20%;--dl:0s;--sz:10px"></span><span class="fx-spark" style="left:26%;top:62%;--dl:-1.3s;--sz:7px"></span><span class="fx-spark" style="left:48%;top:16%;--dl:-2.1s;--sz:9px"></span><span class="fx-spark" style="left:57%;top:74%;--dl:-0.7s;--sz:8px"></span><span class="fx-spark" style="left:73%;top:28%;--dl:-3.2s;--sz:11px"></span><span class="fx-spark" style="left:86%;top:56%;--dl:-1.8s;--sz:7px"></span><span class="fx-spark" style="left:92%;top:18%;--dl:-2.6s;--sz:9px"></span><span class="fx-spark" style="left:36%;top:44%;--dl:-0.4s;--sz:6px"></span><span class="fx-spark" style="left:64%;top:50%;--dl:-3.8s;--sz:8px"></span><span class="fx-spark" style="left:8%;top:86%;--dl:-2.9s;--sz:10px"></span>
+    <div class="fx-hand"><div class="fx-card b2" style="--r:-24deg"><i></i></div><div class="fx-card b1" style="--r:-12deg"><i></i></div><div class="fx-card face" style="--r:0deg"><i></i></div><div class="fx-card b3" style="--r:12deg"><i></i></div><div class="fx-card b1" style="--r:24deg"><i></i></div></div>
+    <div class="fx-card fx-fl b1" style="--x:8%;--y:12%;--w:92px;--r:-14deg;--d:13s;--dl:0s;--z:1"><i></i></div><div class="fx-card fx-fl b3" style="--x:30%;--y:68%;--w:78px;--r:18deg;--d:15s;--dl:-4s;--z:0.6"><i></i></div><div class="fx-card fx-fl b2" style="--x:82%;--y:30%;--w:64px;--r:8deg;--d:17s;--dl:-7s;--z:0.45"><i></i></div><div class="fx-card fx-fl b1" style="--x:62%;--y:44%;--w:70px;--r:-22deg;--d:14s;--dl:-2s;--z:0.55"><i></i></div><div class="fx-card fx-fl face" style="--x:18%;--y:40%;--w:84px;--r:10deg;--d:16s;--dl:-9s;--z:0.8"><i></i></div><div class="fx-card fx-fl b2" style="--x:4%;--y:78%;--w:100px;--r:-6deg;--d:12s;--dl:-3s;--z:1"><i></i></div><div class="fx-card fx-fl b3" style="--x:70%;--y:6%;--w:74px;--r:-10deg;--d:18s;--dl:-6s;--z:0.5"><i></i></div><div class="fx-card fx-fl b1" style="--x:90%;--y:10%;--w:56px;--r:24deg;--d:19s;--dl:-11s;--z:0.35"><i></i></div>
+  </div>
+</div>
+<div class="layout">
+  <nav class="side">
+    <div class="logo"><img src="icons/logo.svg" alt="TCG Price Hunter"><div><b>TCG Price Hunter</b><a class="logolink" href="https://www.cardmarket.com" target="_blank" title="Aller sur Cardmarket">Cardmarket ↗</a></div></div>
+    <button class="nav active" data-view="scanned"><span>🔍</span> Cartes scannées <em id="nScanned">0</em></button>
+    <button class="nav" data-view="best"><span>🏆</span> Meilleur panier</button>
+    <button class="nav" data-view="shipping"><span>📦</span> Frais de port</button>
+    <button class="nav" data-view="settings"><span>⚙️</span> Réglages</button>
+
+    <!-- Progression du scan -->
+    <div class="scanbox" id="scanbox" hidden>
+      <div class="sbt"><b id="progTitle">Scan en cours</b><span id="progCount"></span></div>
+      <div class="bar"><div id="barFill"></div></div>
+      <div id="progText"></div>
+      <div class="eta" id="progEta"></div>
+      <div id="progList"></div>
+      <button id="stopBtn" class="btn danger sm">⏹ Arrêter le scan</button>
+    </div>
+    <div class="foot"><a id="kofiLink" class="don" href="https://ko-fi.com/anastasiophrenelia" target="_blank" rel="noopener" title="Soutenir TCG Price Hunter"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3 8h14v5a6 6 0 0 1-6 6H9a6 6 0 0 1-6-6V8Zm14 1h1.5a3 3 0 0 1 0 6H17v-2h1.5a1 1 0 0 0 0-2H17V9Z"/><path fill="#e8467c" d="M10 16.2l-.6-.55C7.6 14 6.6 13.1 6.6 12c0-.85.67-1.5 1.5-1.5.48 0 .94.22 1.24.58l.66.72.66-.72c.3-.36.76-.58 1.24-.58.83 0 1.5.65 1.5 1.5 0 1.1-1 2-2.8 3.65L10 16.2Z"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M7 2.5c.7.8.7 1.7 0 2.5M10.5 2.5c.7.8.7 1.7 0 2.5M14 2.5c.7.8.7 1.7 0 2.5"/></svg> Offre-moi un café ❤</a><div class="links"><a id="ghLink" class="gh git" href="https://github.com/Anastasiophrenelia/TCG-Price-Hunter" target="_blank" rel="noopener" title="Voir le projet sur GitHub"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M8 7l-5 5 5 5M16 7l5 5-5 5M13.5 4.5l-3 15"/></svg> GitHub</a><a id="dcLink" class="gh dc" href="https://discord.gg/nsXbSNfvDy" target="_blank" rel="noopener" title="Rejoindre le Discord"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M20.32 4.37A19.8 19.8 0 0 0 15.4 2.9a13.6 13.6 0 0 0-.63 1.3 18.4 18.4 0 0 0-5.53 0 13 13 0 0 0-.64-1.3 19.7 19.7 0 0 0-4.92 1.48C.56 9.06-.28 13.62.14 18.12a19.9 19.9 0 0 0 6.04 3.05c.49-.66.92-1.36 1.29-2.1a12.9 12.9 0 0 1-2.03-.97l.5-.39a14.2 14.2 0 0 0 12.12 0l.5.39c-.65.38-1.33.71-2.04.97.37.74.8 1.44 1.29 2.1a19.8 19.8 0 0 0 6.04-3.05c.5-5.22-.84-9.74-3.53-13.75ZM8.02 15.33c-1.18 0-2.15-1.09-2.15-2.42 0-1.33.95-2.42 2.15-2.42 1.21 0 2.17 1.1 2.15 2.42 0 1.33-.95 2.42-2.15 2.42Zm7.96 0c-1.18 0-2.15-1.09-2.15-2.42 0-1.33.95-2.42 2.15-2.42 1.21 0 2.17 1.1 2.15 2.42 0 1.33-.94 2.42-2.15 2.42Z"/></svg> Discord</a></div></div>
+  </nav>
+
+  <main>
+    <div id="cartProg" hidden><div class="cpHead"><b id="cpTitle">🛒 Ajout à ton panier Cardmarket…</b><span id="cpCount"></span></div>
+      <div class="cpBar"><div id="cpFill"></div></div><div id="cpText"></div><div class="cpFoot"><span id="cpEta"></span><button id="cpStop" class="btn danger sm">⏹ Arrêter</button></div></div>
+    <div id="banner" hidden><div id="bannerMsg"></div><button id="bannerClose" title="Fermer ce message">✕</button></div>
+
+    <!-- CARTES SCANNÉES (zoom 150 %) -->
+    <section class="view zoom" id="v-scanned">
+      <header class="vh">
+        <div><h1>Cartes scannées</h1><p class="muted">Ajoute des cartes depuis Cardmarket (barre sous le titre), coche-les et scanne-les ici.</p></div>
+        <div class="hdrbtns"><button id="exportBtn" class="btn ghost" title="Sauvegarder tes cartes, catégories et réglages dans un fichier">⬇ Exporter</button><button id="importBtn" class="btn ghost" title="Récupérer une sauvegarde (les cartes reviennent non scannées)">⬆ Importer</button><input type="file" id="importFile" accept=".json,application/json" hidden><select id="uiLang" title="Langue de l'extension"></select><button id="calcBtn" class="btn primary">🏆 Calculer le meilleur panier</button></div>
+      </header>
+      <!-- Langue voulue (pour toutes les cartes) -->
+      <div class="langbar">
+        <b>🌐 Langue voulue :</b>
+        <div id="topLangs" class="chips"></div>
+        <span id="langWarn"></span>
+      </div>
+      <!-- Catégories -->
+      <div class="catbar" id="catBar"></div>
+      <div class="toolbar">
+        <input id="qScan" type="search" placeholder="Rechercher…">
+        <button class="btn ghost sm" id="allOn">Tout cocher</button>
+        <button class="btn ghost sm" id="allOff">Tout décocher</button>
+        <select id="bulkCat" title="Ranger les cartes cochées dans une catégorie"></select>
+        <span class="spacer"></span>
+        <button class="btn primary sm" id="scanSel">🔍 Scanner la sélection</button>
+        <button class="btn ghost sm" id="scanAll">Tout scanner</button>
+        <span class="muted small" id="scanEstimate"></span>
+      </div>
+      <div class="filterbar">
+        <b>Vendeurs :</b>
+        <label>Note min
+          <select data-s="minRating">
+            <option value="0">Toutes</option><option value="2">Moyen et +</option><option value="3">Bon et +</option>
+            <option value="4">Très bon et +</option><option value="5">Extraordinaire</option>
+          </select></label>
+        <label>Ventes min <input type="number" min="0" step="10" data-s="minSales"></label>
+        <label>📦 Livré en <select data-s="myCountry"></select></label>
+        <label>Vendeurs <select id="sellerScope"><option value="all">de tous les pays</option><option value="mine">de mon pays</option><option value="custom">Choisir des pays…</option></select></label>
+        <label class="sw" title="Coché : tu prends toujours une lettre suivie (2,52 €), donc les vendeurs « envoi suivi obligatoire » ne sont plus désavantagés"><input type="checkbox" data-s="alwaysTracked"> Toujours en lettre suivie</label>
+        <a class="help" href="https://help.cardmarket.com/fr/CardCondition" target="_blank">États des cartes ?</a>
+      </div>
+      <div id="scanRows" class="rows"></div>
+      <div class="footer-actions"><button class="btn ghost sm danger-t" id="clearAll">Tout effacer</button></div>
+    </section>
+
+    <!-- MEILLEUR PANIER -->
+    <section class="view" id="v-best" hidden>
+      <header class="vh">
+        <div><h1>Meilleur panier</h1><p class="muted" id="bestSub">Cartes + frais de port, en une ou plusieurs commandes.</p></div>
+        <div class="vh-actions">
+          <label class="sw big" title="Coché : tu prends toujours une lettre suivie, les vendeurs « envoi suivi obligatoire » ne sont plus désavantagés"><input type="checkbox" data-s="alwaysTracked"> Toujours en lettre suivie</label>
+          <button id="recalcBtn" class="btn ghost">↻ Recalculer</button>
+        </div>
+      </header>
+      <div id="best"></div>
+    </section>
+
+    <!-- FRAIS DE PORT -->
+    <section class="view" id="v-shipping" hidden>
+      <header class="vh">
+        <div><h1>Frais de port</h1><p class="muted">Tarifs officiels Cardmarket pour tous les pays (source : <a href="https://help.cardmarket.com/fr/ShippingCosts" target="_blank">aide Cardmarket</a>). Le calcul du panier utilise automatiquement le bon tarif pour chaque vendeur : pays du vendeur → ton pays.</p></div>
+        <div class="vh-actions"><button class="btn ghost" id="dlAllShip">⬇ Télécharger tous les tarifs</button></div>
+      </header>
+      <div class="note" id="dlShipInfo" hidden></div>
+      <div class="panel">
+        <h3>🔎 N'importe quel pays → n'importe quel pays</h3>
+        <div class="filterbar" style="margin-bottom:10px">
+          <label>Origine (vendeur) <select id="shipFrom"></select></label>
+          <span>→</span>
+          <label>Destination <select id="shipTo"></select></label>
+          <button class="btn ghost sm" id="shipSwap" title="Inverser">⇄</button>
+        </div>
+        <div id="shipTable"></div>
+      </div>
+      <div class="grid2">
+        <div class="panel"><h3 id="toMeTitle">Tous les pays → ton pays</h3><div id="toMe"></div></div>
+        <div class="panel"><h3 id="fromMeTitle">Ton pays → tous les pays</h3><div id="fromMe"></div></div>
+      </div>
+    </section>
+
+    <!-- RÉGLAGES -->
+    <section class="view" id="v-settings" hidden>
+      <header class="vh"><div><h1>Réglages</h1><p class="muted">Ton pays, les pays des vendeurs, les frais de port, le scan et les filtres par défaut.</p></div></header>
+      <div class="grid2">
+        <div class="panel">
+          <h3>🌍 Pays</h3>
+          <label class="field"><span>Je me fais livrer en</span><select data-s="myCountry"></select></label>
+          <label class="check"><input type="checkbox" id="countryFromLang"> <span>Même pays que la langue de l'extension</span></label>
+          <div class="field col"><span>Pays des vendeurs acceptés <i>aucun choisi = tous les pays</i></span>
+            <div class="quick"><button class="btn ghost sm" id="myCountryOnly">Seulement mon pays</button><button class="btn ghost sm" id="allCountries">Tous les pays</button></div>
+            <div id="sellerChips" class="chips"></div></div>
+
+          <h3 style="margin-top:18px">📦 Frais de port</h3>
+          <div class="note" id="letterInfo"></div>
+          <label class="check"><input type="checkbox" data-s="alwaysTracked"> Toujours en envoi suivi <i class="muted">(sinon : le moins cher, et suivi seulement quand c'est obligatoire)</i></label>
+          <a class="help" href="https://help.cardmarket.com/fr/ShippingCosts" target="_blank">Voir les frais de port sur l'aide Cardmarket</a>
+          <details class="manual">
+            <summary>Tarifs manuels (seulement si les tarifs officiels ne se chargent pas)</summary>
+            <label class="field"><span>Lettre (€)</span><input type="number" step="0.01" data-s="letterPrice"></label>
+            <label class="field"><span>Lettre : poids max (g)</span><input type="number" data-s="letterMaxW"></label>
+            <label class="field"><span>Lettre : valeur max (€) <i>0 = pas de limite</i></span><input type="number" step="1" data-s="letterMaxValue"></label>
+            <label class="field"><span>Lettre suivie (€)</span><input type="number" step="0.01" data-s="trackedLetterPrice"></label>
+            <label class="field"><span>Colis suivi (€)</span><input type="number" step="0.01" data-s="parcelPrice"></label>
+            <label class="field"><span>Colis : poids max (g)</span><input type="number" data-s="parcelMaxW"></label>
+            <label class="field"><span>Poids d'une carte (g)</span><input type="number" step="0.1" data-s="cardW"></label>
+            <label class="field"><span>Emballage (g)</span><input type="number" step="0.5" data-s="packW"></label>
+          </details>
+        </div>
+        <div class="panel">
+          <h3>🔍 Scan</h3>
+          <label class="field"><span>Cartes scannées en même temps <i>sans ouvrir d'onglets, marche aussi en plein écran</i></span>
+            <select data-s="concurrency"><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></label>
+          <label class="field"><span>Offres max chargées par carte <i>50 = 1 seule requête : Cardmarket filtre déjà langue, état et pays, et trie par prix</i></span>
+            <select data-s="maxOffers"><option value="50">50 (1 requête)</option><option value="100">100 (2 requêtes)</option><option value="200">200 (4 requêtes)</option><option value="400">400 (8 requêtes)</option></select></label>
+          <label class="field"><span>Ne pas re-scanner une carte scannée il y a moins de <i>avec les mêmes filtres · ↻ sur une carte force le scan</i></span>
+            <select data-s="freshHours"><option value="0">jamais (toujours re-scanner)</option><option value="1">1 h</option><option value="6">6 h</option><option value="24">24 h</option><option value="72">3 jours</option></select></label>
+          <div class="field"><span>📋 Journal des requêtes <i>chaque requête envoyée à Cardmarket : heure, type, réponse, blocages</i></span><span><b id="nReqLog">0</b> <button class="btn ghost sm" id="exportReqLog">⬇ Exporter</button> <button class="btn ghost sm" id="clearReqLog">Vider</button></span></div>
+          <div class="note">⚠ Cardmarket peut bloquer ton IP s'il reçoit trop de requêtes (la limite n'est pas publique). Si ça arrive, le scan se met en pause tout seul (1, 2, 4 puis 8 min) et reprend. Les requêtes partent à 1 toutes les 1,2 secondes (50 cartes par minute) et ralentissent toutes seules si Cardmarket freine. Le scan commence par 1 carte pour vérifier que tu es connecté. Si Cardmarket bloque pour trop de requêtes (erreur 1015), le scan fait une pause de 10 min puis reprend.</div>
+
+          <h3 style="margin-top:18px">🌐 Par défaut pour les cartes</h3>
+          <div class="field col"><span>Langues voulues <i>aucune cochée = toutes</i></span><div id="defLangs" class="chips"></div></div>
+          <label class="field"><span>État minimum <a class="help" href="https://help.cardmarket.com/fr/CardCondition" target="_blank">?</a></span><select data-s="defaultCond" id="defCond"></select></label>
+          <button class="btn ghost sm" id="applyDefaults">Appliquer à toutes les cartes</button>
+
+          <h3 style="margin-top:18px">🚫 Vendeurs bloqués <span class="muted" id="nBlocked"></span></h3>
+          <div id="blockedList" class="chips"></div>
+          <div class="field"><span>Offres ignorées <i id="nIgnored"></i></span><button class="btn ghost sm" id="resetIgnored">Tout réafficher</button></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script src="i18n.js"></script>
+<script src="parse.js"></script>
+<script src="optimizer.js"></script>
+<script src="app.js"></script>
+<script src="fx.js"></script>
+</body>
+</html>
