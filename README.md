@@ -56,7 +56,7 @@ L'extension ne collecte rien et n'envoie rien à personne. Tes cartes et réglag
 
 ## ⚖️ Licence
 
-© 2026 Nicoco ([Anastasiophrenelia](https://github.com/Anastasiophrenelia)) — **tous droits réservés**.
+© 2026 [Anastasiophrenelia](https://github.com/Anastasiophrenelia) — **tous droits réservés**.
 Le code est visible ici mais **n'est pas open source** : il est interdit de le copier, de le modifier pour le republier, de le redistribuer ou de le publier sur une boutique d'extensions sans mon accord écrit. Détails dans [LICENSE](LICENSE).
 
 Projet indépendant, ni affilié ni approuvé par Cardmarket.
