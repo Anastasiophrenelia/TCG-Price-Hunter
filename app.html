@@ -94,7 +94,7 @@
           </select></label>
         <label>Ventes min <input type="number" min="0" step="10" data-s="minSales"></label>
         <label>📦 Livré en <select data-s="myCountry"></select></label>
-        <label>Vendeurs <select id="sellerScope"><option value="all">de tous les pays</option><option value="mine">de mon pays</option><option value="custom">Choisir des pays…</option></select></label>
+        <label>Vendeurs <select id="sellerScope"><option value="all">de tous les pays</option><option value="nocustoms">sans douane</option><option value="mine">de mon pays</option><option value="custom">Choisir des pays…</option></select></label>
         <label class="sw" title="Coché : tu prends toujours une lettre suivie (2,52 €), donc les vendeurs « envoi suivi obligatoire » ne sont plus désavantagés"><input type="checkbox" data-s="alwaysTracked"> Toujours en lettre suivie</label>
         <a class="help" href="https://help.cardmarket.com/fr/CardCondition" target="_blank">États des cartes ?</a>
       </div>
@@ -146,7 +146,7 @@
           <label class="field"><span>Je me fais livrer en</span><select data-s="myCountry"></select></label>
           <label class="check"><input type="checkbox" id="countryFromLang"> <span>Même pays que la langue de l'extension</span></label>
           <div class="field col"><span>Pays des vendeurs acceptés <i>aucun choisi = tous les pays</i></span>
-            <div class="quick"><button class="btn ghost sm" id="myCountryOnly">Seulement mon pays</button><button class="btn ghost sm" id="allCountries">Tous les pays</button></div>
+            <div class="quick"><button class="btn ghost sm" id="myCountryOnly">Seulement mon pays</button><button class="btn ghost sm" id="noCustomsOnly">sans douane</button><button class="btn ghost sm" id="allCountries">Tous les pays</button></div>
             <div id="sellerChips" class="chips"></div></div>
 
           <h3 style="margin-top:18px">📦 Frais de port</h3>

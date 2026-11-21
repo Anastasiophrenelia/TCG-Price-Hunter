@@ -53,6 +53,10 @@
     const ratingEl = r.querySelector('[class*="fonticon-seller-rating-"]');
     // n° d'article (ligne "articleRow2192404224" / bouton panier data-id-amount) : sert à "Ajouter au panier"
     const aid = (r.id || '').match(/articleRow(\d+)/)?.[1] || r.querySelector('[data-id-amount]')?.getAttribute('data-id-amount') || '';
+    // offre restreinte par le vendeur : bouton panier gris « Le vendeur a restreint cette offre. Tu ne peux pas acheter cet article. »
+    const cartBtn = r.querySelector('.fonticon-cart')?.closest('a, button');
+    const restricted = !!cartBtn && !cartBtn.hasAttribute('data-id-amount') &&
+      (cartBtn.classList.contains('btn-grey') || /restrei|restrict|eingeschr|restring|limitat|ne peux pas acheter|cannot (buy|purchase)|kannst .* nicht kaufen|no puedes comprar|non puoi acquistare/i.test(tip(cartBtn)));
     return {
       seller,
       aid,
@@ -65,6 +69,7 @@
       rating: ratingEl ? (ratingEl.className.match(/fonticon-seller-rating-([a-z-]+)/) || [])[1] || '' : '',
       sales: parseSales(r),
       tracked: allTips.some((t) => TRACKED_RE.test(t)) ? 1 : 0, // "Seulement en envoi suivi vers France"
+      restricted: restricted ? 1 : 0,                         // le vendeur ne vend pas cet article à ton compte
     };
   }
 

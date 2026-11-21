@@ -76,7 +76,10 @@ async function loadAll() {
   if (settings.countryFromLang) settings.myCountry = countryForLang(settings.uiLang, settings.uiRegion);
   I18N.setLang(settings.uiLang);
   if (!settings.myCountry) settings.myCountry = 12;                       // pays où tu te fais livrer
-  if (!Array.isArray(settings.sellerCountries)) settings.sellerCountries = settings.franceOnly === false ? [] : [settings.myCountry]; // [] = tous les pays
+  if (!Array.isArray(settings.sellerCountries)) settings.sellerCountries = []; // [] = tous les pays (par défaut)
+  // par défaut : pays de l'UE -> « Europe (sans douane) », sinon « seulement mon pays » (réglé une fois, puis plus besoin de toucher)
+  if (!settings.v112) { settings.v112 = true; settings.sellerPreset = settings.sellerPreset === 'custom' ? 'custom' : 'auto'; }
+  if (settings.sellerPreset === 'auto') setSellerPreset('auto');
   cats = d.cmCats || [];
   ignored = d.cmIgnored || {};
   blocked = d.cmBlocked || {};
@@ -88,8 +91,8 @@ async function loadAll() {
 }
 // pays de livraison d'après la langue (région du navigateur si elle colle, sinon le pays principal de la langue)
 const REGION_ID = { FR: 12, DE: 7, AT: 1, BE: 2, BG: 3, CA: 33, CY: 5, HR: 35, DK: 8, ES: 10, EE: 9, FI: 11, GR: 14, HU: 15, IE: 16, IS: 37, IT: 17, JP: 36, LV: 21, LI: 18, LT: 19, LU: 20, MT: 22, NO: 24, NL: 23, PL: 25, PT: 26, RO: 27, GB: 13, UK: 13, CZ: 6, SG: 29, SK: 31, SI: 30, CH: 4, SE: 28 };
-const LANG_COUNTRY = { fr: 12, en: 13, de: 7, es: 10, it: 17 };
-const LANG_REGIONS = { fr: ['FR', 'BE', 'CH', 'LU', 'CA'], en: ['GB', 'UK', 'IE', 'MT', 'CA', 'SG'], de: ['DE', 'AT', 'CH', 'LI', 'LU'], es: ['ES'], it: ['IT', 'CH'] };
+const LANG_COUNTRY = { fr: 12, en: 13, de: 7, es: 10, it: 17, pt: 26, nl: 23, pl: 25 };
+const LANG_REGIONS = { fr: ['FR', 'BE', 'CH', 'LU', 'CA'], en: ['GB', 'UK', 'IE', 'MT', 'CA', 'SG'], de: ['DE', 'AT', 'CH', 'LI', 'LU'], es: ['ES'], it: ['IT', 'CH'], pt: ['PT'], nl: ['NL', 'BE'], pl: ['PL'] };
 function countryForLang(lang, region) {
   if (region && REGION_ID[region] && (LANG_REGIONS[lang] || []).includes(region)) return REGION_ID[region];
   return LANG_COUNTRY[lang] || 12;
@@ -130,6 +133,7 @@ function filteredOffers(it) {
     (RATING_RANK[o.rating] || 0) >= (+settings.minRating || 0) &&
     (o.sales || 0) >= (+settings.minSales || 0) &&
     !blocked[o.seller] &&
+    !o.restricted &&                       // offre restreinte par le vendeur : impossible à acheter
     !ignored[offerKey(it.id, o)]);
 }
 
@@ -912,6 +916,20 @@ const EU_IDS = new Set([12, 7, 1, 2, 3, 5, 35, 8, 10, 9, 11, 14, 15, 16, 17, 21,
 const VAT_RATE = { 12: 20, 7: 19, 1: 20, 2: 21, 3: 20, 5: 19, 35: 25, 8: 25, 10: 21, 9: 24, 11: 25.5, 14: 24, 15: 27, 16: 23, 17: 22, 21: 21, 19: 21,
   20: 17, 22: 18, 23: 21, 25: 23, 26: 23, 27: 21, 6: 21, 31: 23, 30: 22, 28: 25, 13: 20, 24: 25, 37: 24 };
 const customsZone = (id) => (EU_IDS.has(id) ? 'EU' : id === 4 || id === 18 ? 'CH' : 'C' + id);
+// pays sans douane depuis ton pays de livraison (UE -> les 27 ; Suisse -> Suisse + Liechtenstein ; sinon ton pays)
+const noCustomsIds = () => COUNTRIES.map(([id]) => id).filter((id) => customsZone(id) === customsZone(+settings.myCountry));
+const sameSet = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
+// choix rapide des pays de vendeurs : 'all' | 'nocustoms' | 'mine' | 'custom' ; « mon pays » et « sans douane » suivent ton pays de livraison
+function setSellerPreset(p) {
+  settings.sellerPreset = p;
+  if (p === 'all') settings.sellerCountries = [];
+  else if (p === 'mine') settings.sellerCountries = [+settings.myCountry];
+  else if (p === 'nocustoms') settings.sellerCountries = noCustomsIds();
+  else if (p === 'auto') settings.sellerCountries = EU_IDS.has(+settings.myCountry) ? noCustomsIds() : [+settings.myCountry]; // UE -> Europe sans douane, sinon mon pays
+}
+const followCountry = () => { if (['mine', 'nocustoms', 'auto'].includes(settings.sellerPreset)) setSellerPreset(settings.sellerPreset); else if (settings.sellerCountries.length === 1 && settings.sellerPreset !== 'custom') settings.sellerCountries = [+settings.myCountry]; };
+// drapeau d'un pays (emoji ; une police de drapeaux est incluse pour Windows)
+const flagOf = (id) => { const iso = id === 13 ? 'GB' : ID_ISO[id]; return iso && /^[A-Z]{2}$/.test(iso) ? String.fromCodePoint(...[...iso].map((c) => 0x1f1a5 + c.charCodeAt(0))) : ''; };
 // règle pour un vendeur de ce pays -> toi : TVA du pays de livraison sur (cartes + port)
 //  + UE : droit de douane fixe de 3 € par colis jusqu'à 150 € (depuis juillet 2026), au-delà frais de dédouanement du transporteur (~10 €)
 //  + Royaume-Uni / Norvège : au-delà de 135 £ / 3000 NOK, frais de dédouanement du transporteur (~10 €)
@@ -1032,7 +1050,7 @@ function renderBest() {
   h += r.orders.map((o, k) => `<div class="order ${k > 2 ? 'closed' : ''}">
       <div class="oh" data-toggle>
         <span class="chev">▾</span>
-        <div><div class="who"><a href="${esc(sellerUrl(o.seller, game))}" target="_blank">${esc(o.seller)}</a></div>
+        <div><div class="who">${(() => { const c = countryId(o.lines[0]?.opt.picked[0]?.country || ''); return c ? `<span class="flag" title="${esc(cLabel(c, countryName(c)))}">${flagOf(c)}</span> ` : ''; })()}<a href="${esc(sellerUrl(o.seller, game))}" target="_blank">${esc(o.seller)}</a></div>
           <div class="tags"><span class="tag">${TP(`${o.n} carte${o.n > 1 ? 's' : ''}`, '{n} carte(s)', { n: o.n })}</span><span class="tag ok">${esc(o.shipName)} ${euro(o.ship)}</span>${o.tracked ? '<span class="tag warn">envoi suivi seulement</span>' : ''}${o.duty > 0.004 ? `<span class="tag warn" title="${esc(T('Vendeur hors de ta zone douanière : TVA à l\'import + droit de douane / frais de dédouanement (estimation)'))}">${esc(TF('douane ≈ {a}', { a: euro(o.duty) }))}</span>` : ''}</div></div>
         <div class="tot"><b>${euro(o.total)}</b><span>${euro(o.items)} + port ${euro(o.ship)}${o.duty > 0.004 ? ` + ${esc(T('douane'))} ${euro(o.duty)}` : ''}</span></div>
         <button class="btn ghost sm" data-cart="${esc(o.seller)}" title="Ajouter seulement cette commande au panier Cardmarket">🛒 Ajouter</button>
@@ -1094,10 +1112,16 @@ function renderSettings() {
   document.querySelectorAll('select[data-s="myCountry"]').forEach((el) => { el.innerHTML = opts; el.value = String(settings.myCountry); el.disabled = !!settings.countryFromLang; el.title = settings.countryFromLang ? T('Même pays que la langue de l\'extension') : ''; });
   $('countryFromLang').checked = !!settings.countryFromLang;
   $('uiLang').innerHTML = I18N.LANGS.map(([c, n, f]) => `<option value="${c}" ${settings.uiLang === c ? 'selected' : ''}>${f} ${n}</option>`).join('');
-  const sc = settings.sellerCountries;
-  $('sellerChips').innerHTML = COUNTRIES.map(([id, n]) => `<span class="chip ${sc.includes(id) ? 'on' : ''}" data-sellerc="${id}">${esc(cLabel(id, n))}</span>`).join('');
-  $('sellerScope').value = !sc.length ? 'all' : sc.length === 1 && sc[0] === +settings.myCountry ? 'mine' : 'custom';
-  $('sellerScope').querySelector('[value=custom]').textContent = sc.length && !(sc.length === 1 && sc[0] === +settings.myCountry) ? `Choisis (${sc.length} pays)…` : 'Choisir des pays…';
+  const sc = settings.sellerCountries, allIds = COUNTRIES.map(([id]) => id);
+  const isAll = !sc.length || sameSet(sc, allIds);
+  // « tous les pays » = toutes les cases cochées pour de vrai
+  $('sellerChips').innerHTML = COUNTRIES.map(([id, n]) => `<span class="chip ${isAll || sc.includes(id) ? 'on' : ''}" data-sellerc="${id}"><span class="flag">${flagOf(id)}</span> ${esc(cLabel(id, n))}</span>`).join('');
+  const scope = isAll ? 'all' : sameSet(sc, [+settings.myCountry]) ? 'mine' : sameSet(sc, noCustomsIds()) ? 'nocustoms' : 'custom';
+  const ncLabel = EU_IDS.has(+settings.myCountry) ? T('🇪🇺 Europe (sans douane)') : T('sans douane');
+  document.querySelectorAll('#sellerScope [value=nocustoms], #noCustomsOnly').forEach((el) => { el.textContent = ncLabel; });
+  $('sellerScope').value = scope;
+  $('sellerScope').querySelector('[value=custom]').textContent = scope === 'custom' ? TF('Choisis ({n} pays)…', { n: sc.length }) : T('Choisir des pays…');
+  [['myCountryOnly', 'mine'], ['noCustomsOnly', 'nocustoms'], ['allCountries', 'all']].forEach(([k, v]) => $(k).classList.toggle('on', v === scope));
   const bl = Object.keys(blocked).sort();
   $('nBlocked').textContent = bl.length ? `(${bl.length})` : '';
   $('blockedList').innerHTML = bl.length ? bl.map((s) => `<span class="chip on" data-unblock="${esc(s)}" title="Débloquer">${esc(s)} ✕</span>`).join('') : '<span class="muted">Aucun. Bloque un vendeur avec 🚫 sur une page Cardmarket.</span>';
@@ -1268,7 +1292,7 @@ document.addEventListener('change', (e) => {
   const k = e.target.dataset.s; if (!k) return;
   settings[k] = e.target.type === 'checkbox' ? e.target.checked : (k === 'defaultCond' ? e.target.value : parseFloat(e.target.value) || 0);
   if (k === 'myCountry') { // nouveau pays de livraison : "mon pays" suit, et on charge ses tarifs
-    if (settings.sellerCountries.length === 1) settings.sellerCountries = [settings.myCountry];
+    followCountry();
     ensureShipTables().then(() => { renderSettings(); renderScanned(); });
   }
   saveSettings(); renderSettings(); renderScanned();
@@ -1286,19 +1310,23 @@ $('v-settings').addEventListener('click', (e) => {
 });
 $('sellerScope').addEventListener('change', (e) => {
   const v = e.target.value;
-  if (v === 'all') settings.sellerCountries = [];
-  else if (v === 'mine') settings.sellerCountries = [+settings.myCountry];
+  if (v === 'all' || v === 'mine' || v === 'nocustoms') setSellerPreset(v);
   else { switchView('settings'); $('sellerChips').scrollIntoView({ block: 'center' }); return; }
   saveSettings(); renderSettings(); renderScanned();
 });
 $('sellerChips').addEventListener('click', (e) => {
   const c = e.target.closest('[data-sellerc]'); if (!c) return;
-  const id = +c.dataset.sellerc, cur = settings.sellerCountries;
-  settings.sellerCountries = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+  const allIds = COUNTRIES.map(([x]) => x), id = +c.dataset.sellerc;
+  const cur = settings.sellerCountries.length ? settings.sellerCountries : allIds; // « tous » = toutes cochées
+  let next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+  if (!next.length) next = [+settings.myCountry]; // jamais aucun pays
+  settings.sellerPreset = 'custom'; // toucher une case = « personnalisé »
+  settings.sellerCountries = sameSet(next, allIds) ? [] : next;
   saveSettings(); renderSettings(); renderScanned();
 });
-$('allCountries').addEventListener('click', () => { settings.sellerCountries = []; saveSettings(); renderSettings(); renderScanned(); });
-$('myCountryOnly').addEventListener('click', () => { settings.sellerCountries = [+settings.myCountry]; saveSettings(); renderSettings(); renderScanned(); });
+$('allCountries').addEventListener('click', () => { setSellerPreset('all'); saveSettings(); renderSettings(); renderScanned(); });
+$('myCountryOnly').addEventListener('click', () => { setSellerPreset('mine'); saveSettings(); renderSettings(); renderScanned(); });
+$('noCustomsOnly').addEventListener('click', () => { setSellerPreset('nocustoms'); saveSettings(); renderSettings(); renderScanned(); });
 $('applyDefaults').addEventListener('click', () => {
   items().forEach((it) => { it.langs = [...settings.defaultLangs]; it.cond = settings.defaultCond; });
   saveList(); renderScanned();
@@ -1442,7 +1470,7 @@ function cLabel(id, fr) { // nom du pays dans la langue de l'extension
 }
 $('uiLang').addEventListener('change', (e) => {
   settings.uiLang = e.target.value;
-  if (settings.countryFromLang) { settings.myCountry = countryForLang(settings.uiLang, settings.uiRegion); if (settings.sellerCountries.length === 1) settings.sellerCountries = [settings.myCountry]; }
+  if (settings.countryFromLang) { settings.myCountry = countryForLang(settings.uiLang, settings.uiRegion); followCountry(); }
   saveSettings();
   location.reload(); // tout se réaffiche dans la nouvelle langue
 });
@@ -1450,7 +1478,7 @@ $('countryFromLang').addEventListener('change', (e) => {
   settings.countryFromLang = e.target.checked;
   if (settings.countryFromLang) {
     settings.myCountry = countryForLang(settings.uiLang, settings.uiRegion);
-    if (settings.sellerCountries.length === 1) settings.sellerCountries = [settings.myCountry];
+    followCountry();
     ensureShipTables().then(() => { renderSettings(); renderScanned(); });
   }
   saveSettings(); renderSettings(); renderScanned();

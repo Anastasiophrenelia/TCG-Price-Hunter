@@ -1,3 +1,5 @@
 Fond : les images des cartes viennent de Cardmarket (les cartes de ta liste), chargées en direct, rien n'est inclus dans l'extension. Sans carte dans la liste, des dos de carte originaux sont affichés.
 
 Polices (fonts/) : Inter, Cinzel, JetBrains Mono — SIL Open Font License (voir fonts/LICENSE-*).
+
+Drapeaux (fonts/TwemojiCountryFlags.woff2) : dessins Twemoji (© Twitter, Inc et contributeurs), licence CC-BY 4.0 — police « Twemoji Country Flags » de TalkJS (MIT). Voir fonts/LICENSE-TwemojiCountryFlags.txt.

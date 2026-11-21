@@ -36,7 +36,7 @@
 - **Fills your Cardmarket cart** in one click and lists what Cardmarket refused, with a button to rescan those cards. Nothing is bought, and shipping methods are not selected: you choose them and pay yourself.
 - Filters by **language**, **minimum condition**, **seller countries**, **rating** and **number of sales**; blocked sellers, ignored offers, categories.
 - **Fast and careful**: 1 request per card, 3 cards at a time, never more than 280 cards per minute; captchas pause the scan and it resumes on its own.
-- Interface in **English, French, German, Spanish and Italian**.
+- Interface in **English, French, German, Spanish, Italian, Portuguese, Dutch and Polish**.
 - **Export / import** your cards and settings.
 
 Works with every card sold on Cardmarket: Riftbound, Pokémon, Magic, One Piece, Lorcana, Yu-Gi-Oh!, Dragon Ball…
@@ -48,6 +48,9 @@ Works with every card sold on Cardmarket: Riftbound, Pokémon, Magic, One Piece,
 - Add to cart: Cardmarket's answers are now really checked, expired tokens are renewed, and refused articles are listed (with a "rescan" button).
 - Customs and import VAT estimate between customs areas, explained in the Shipping costs tab.
 - Cards grouped by set with a colour bar, unticked cards greyed out, cleaner columns.
+- Offers restricted by the seller ("you can't buy this item") are skipped by the best basket.
+- Seller countries: one click for "Europe (no customs)", automatic by default from your delivery country; seller flags in the orders.
+- 3 new interface languages: Portuguese, Dutch and Polish.
 
 ## 📦 Install on Chrome (from GitHub)
 
