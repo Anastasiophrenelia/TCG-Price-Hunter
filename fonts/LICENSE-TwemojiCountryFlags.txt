@@ -1,0 +1,8 @@
+Twemoji Country Flags (font, from the "country-flag-emoji-polyfill" package by TalkJS)
+
+Flag artwork: Twemoji — Copyright 2019 Twitter, Inc and other contributors
+https://github.com/twitter/twemoji
+Licensed under CC-BY 4.0: https://creativecommons.org/licenses/by/4.0/
+
+Font packaging code: Copyright (c) 2022 TalkJS — MIT License
+https://github.com/talkjs/country-flag-emoji-polyfill
