@@ -553,3 +553,7 @@ html[data-theme=dark] .verfoot + .foot { margin-top: 0; }
 .customs p { margin: 6px 0; line-height: 1.5; }
 .customs .warn { color: #fbbf24; font-weight: 600; }
 .customs table { margin: 8px 0; }
+
+/* avertissement important (ex. « Ne ferme pas cette page pendant l'ajout au panier. ») */
+.cartbar .danger, .danger { color: #f87171; font-weight: 700; }
+.cartbar .shipwarn { color: #fbbf24; }

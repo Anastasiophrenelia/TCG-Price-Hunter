@@ -81,6 +81,8 @@ async function loadAll() {
   ignored = d.cmIgnored || {};
   blocked = d.cmBlocked || {};
   lastCartFailed = Array.isArray(d.cmCartFailed) ? d.cmCartFailed : [];
+  cartRetryIds = Array.isArray(d.cmCartRetry) ? d.cmCartRetry : [];
+  cartResume = Array.isArray(d.cmCartResume) ? d.cmCartResume : [];
   scans = {};
   for (const k of Object.keys(d)) if (k.startsWith('scan_')) scans[k.slice(5)] = d[k];
 }
@@ -634,6 +636,10 @@ function renderProgress() {
 // réponse de Cardmarket à un ajout au panier : <ajaxResponse><resultType>base64</resultType><systemMessage>base64(HTML)</systemMessage>
 let lastCartFailed = [];
 const setCartFailed = (arr) => { lastCartFailed = arr; chrome.storage.local.set({ cmCartFailed: arr }); };
+// cartes re-scannées depuis « Pas ajoutés au panier » (bouton « ajouter les re-scannées ») et articles restants après un ⏹ (bouton « reprendre »)
+let cartRetryIds = [], cartResume = [];
+const setCartRetry = (ids) => { cartRetryIds = ids; chrome.storage.local.set({ cmCartRetry: ids }); };
+const setCartResume = (arr) => { cartResume = arr; chrome.storage.local.set({ cmCartResume: arr }); };
 // cartes (de ta liste) qui n'ont pas pu aller dans le panier
 const cartFailedIds = () => [...new Set(lastCartFailed.map((f) => f.id || Object.values(list).find((it) => it.url === f.url)?.id).filter((id) => id && list[id]))];
 function b64(s) { try { return new TextDecoder().decode(Uint8Array.from(atob((s || '').trim()), (c) => c.charCodeAt(0))); } catch { return ''; } }
@@ -646,10 +652,10 @@ function cartAnswer(t) {
   if (!/<ajaxResponse/i.test(t) && !type) return { ok: false, msg: 'réponse inattendue de Cardmarket' };
   return { ok: true, msg };
 }
-async function addToCart(orders) {
+async function addToCart(orders, preset, mode) {
   if (job.active) return banner('Un scan ou un ajout est déjà en cours, attends la fin.');
-  const items = [];
-  orders.forEach((o) => o.lines.forEach(({ line, opt }) => opt.picked.forEach((p) =>
+  const items = preset ? preset.slice() : [];
+  if (!preset) orders.forEach((o) => o.lines.forEach(({ line, opt }) => opt.picked.forEach((p) =>
     items.push({ id: line.id, aid: p.aid, take: p.take, price: p.price, name: line.name, seller: o.seller, url: line.url }))));
   if (!items.length) return;
   const noAid = items.filter((i) => !i.aid);
@@ -723,7 +729,13 @@ async function addToCart(orders) {
       }
     } catch (e) { /* vérification impossible : on garde le résultat des réponses */ }
   }
-  setCartFailed(failedItems);
+  // ajout « re-scannées » ou « reprise » : on garde les refus précédents des autres cartes
+  setCartFailed(mode ? [...lastCartFailed.filter((f) => !items.some((it) => it.aid === f.aid || (f.id && it.id === f.id))), ...failedItems] : failedItems);
+  // arrêté avec ⏹ : on garde ce qui reste à ajouter pour le bouton « Reprendre »
+  setCartResume(!job.active ? items.slice(job.done) : []);
+  // cartes bien ajoutées : plus besoin du bouton « ajouter les re-scannées » pour elles
+  { const added = new Set(items.slice(0, job.done).filter((it) => !failedItems.some((f) => f.aid === it.aid)).map((it) => it.id));
+    if (cartRetryIds.some((id) => added.has(id))) setCartRetry(cartRetryIds.filter((id) => !added.has(id))); }
   clearInterval(job.timer);
   const stopped = !job.active;
   showCartProg(false, stopped);
@@ -988,7 +1000,7 @@ function renderBest() {
   const saving = r.naive.total - r.total;
   h += `<div class="tiles">
     <div class="tile main"><div class="k">Total à payer</div><div class="v">${euro(r.total)}</div></div>
-    <div class="tile"><div class="k">Cartes</div><div class="v">${euro(r.items)}</div></div>
+    <div class="tile"><div class="k">Cartes</div><div class="v">${euro(r.items)}</div><div class="k" style="margin-top:4px">${(() => { const nb = r.orders.reduce((a, o) => a + o.n, 0), nu = r.unavailable.length; return esc(TP(`${nb} carte${nb > 1 ? 's' : ''} dans le panier`, '{n} carte(s) dans le panier', { n: nb })) + (nu ? ' · ' + esc(TP(`${nu} introuvable${nu > 1 ? 's' : ''}`, '{n} introuvable(s)', { n: nu })) : ''); })()}</div></div>
     <div class="tile"><div class="k">${TP(`Frais de port · ${r.orders.length} commande${r.orders.length > 1 ? 's' : ''}`, 'Frais de port · {n} commande(s)', { n: r.orders.length })}</div><div class="v">${euro(r.ship)}</div>${r.duty > 0.004 ? `<div class="k" style="margin-top:4px">${esc(TF('+ douane / TVA ≈ {a}', { a: euro(r.duty) }))}</div>` : ''}</div>
     <div class="tile"><div class="k">Tu économises (vs chaque carte au moins cher)</div><div class="v" style="color:${saving > 0.005 ? 'var(--ok)' : 'var(--mut)'}">${saving > 0.005 ? euro(saving) : '0 €'}</div></div>
   </div>`;
@@ -1009,8 +1021,13 @@ function renderBest() {
 
   // commandes
   const nArt = r.orders.reduce((a, o) => a + o.n, 0);
+  const retrySet = new Set(cartRetryIds);
+  const nRetry = r.orders.reduce((a, o) => a + o.lines.filter(({ line }) => retrySet.has(line.id)).reduce((b, { opt }) => b + opt.units, 0), 0);
+  const nResume = cartResume.reduce((a, it) => a + it.take, 0);
   h += `<div class="cartbar"><button class="btn primary" data-cart="all">${TP(`🛒 Tout ajouter à mon panier Cardmarket (${nArt} carte${nArt > 1 ? 's' : ''})`, '🛒 Tout ajouter à mon panier Cardmarket ({n} carte(s))', { n: nArt })}</button>
-    <span class="muted">⚠ Les modes de livraison ne sont pas sélectionnés : tu dois les choisir toi-même dans ton panier Cardmarket avant de payer.</span></div>`;
+    ${nResume ? `<button class="btn sm warnbtn" data-cart="resume">${esc(TF("▶ Reprendre l'ajout ({n} carte(s) restante(s))", { n: nResume }))}</button>` : ''}
+    ${nRetry ? `<button class="btn sm warnbtn" data-cart="retry">${esc(TF('🔁 Ajouter les re-scannées au panier ({n} carte(s))', { n: nRetry }))}</button>` : ''}
+    <span class="shipwarn">⚠ Les modes de livraison ne sont pas sélectionnés : tu dois les choisir toi-même dans ton panier Cardmarket avant de payer.</span> <span class="danger">Ne ferme pas cette page pendant l'ajout au panier.</span></div>`;
   h += `<h2 class="sectionTitle">🛒 Les commandes à passer</h2>`;
   h += r.orders.map((o, k) => `<div class="order ${k > 2 ? 'closed' : ''}">
       <div class="oh" data-toggle>
@@ -1186,7 +1203,7 @@ function bulkScan(its) {
 $('scanSel').addEventListener('click', () => bulkScan(items().filter((it) => it.checked)));
 $('scanAll').addEventListener('click', () => bulkScan(items()));
 // re-scan forcé des cartes refusées par le panier (même si elles ont été scannées il y a peu : les offres ont changé)
-const rescanCartFailed = () => { const ids = cartFailedIds(); if (ids.length) startScan(ids); };
+const rescanCartFailed = () => { const ids = cartFailedIds(); if (ids.length) { setCartRetry([...new Set([...cartRetryIds, ...ids])]); startScan(ids); } };
 $('scanFailed').addEventListener('click', rescanCartFailed);
 document.addEventListener('click', (e) => { if (e.target.closest('[data-rescanfailed]')) { switchView('scanned'); rescanCartFailed(); } });
 $('stopBtn').addEventListener('click', () => { job.queue = []; job.active = false; renderProgress(); $('progText').textContent = 'Arrêt…'; });
@@ -1232,6 +1249,13 @@ $('best').addEventListener('click', (e) => {
   const c = e.target.closest('[data-cart]');
   if (c && lastResult) {
     e.stopPropagation();
+    if (c.dataset.cart === 'resume') return addToCart(null, cartResume, 'resume');
+    if (c.dataset.cart === 'retry') { // seulement les cartes re-scannées, avec leur nouveau meilleur vendeur
+      compute(); renderBest(); // recalcul avec les offres fraîchement re-scannées
+      const set = new Set(cartRetryIds);
+      const orders = lastResult.r.orders.map((o) => ({ ...o, lines: o.lines.filter(({ line }) => set.has(line.id)) })).filter((o) => o.lines.length);
+      return addToCart(orders, null, 'retry');
+    }
     const orders = c.dataset.cart === 'all' ? lastResult.r.orders : lastResult.r.orders.filter((o) => o.seller === c.dataset.cart);
     return addToCart(orders);
   }
