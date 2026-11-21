@@ -54,7 +54,7 @@
     const info = productInfo();
     if (!info) return 0;
     const settings = (await chrome.storage.local.get('cmSettings')).cmSettings || {};
-    const max = +settings.maxOffers || 400;
+    const max = 50; // 50 offres max (1 requête) : au-delà Cardmarket bloque (erreur 1015)
     const qtyInput = document.querySelector('#cmpm-box input[data-a="qty"]');
     if (qtyInput && !auto) pendingQty = parseInt(qtyInput.value, 10) || 1;
     scanning = true; stopScan = false;

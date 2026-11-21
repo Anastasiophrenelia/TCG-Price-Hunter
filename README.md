@@ -13,7 +13,7 @@
 <p align="center">
   <a href="https://discord.gg/Vm8vfqznh2"><img src="https://img.shields.io/badge/Discord-join-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord"></a>
   <a href="https://ko-fi.com/anastasiophrenelia"><img src="https://img.shields.io/badge/Ko--fi-support%20the%20project-FF5E5B?style=flat-square&logo=kofi&logoColor=white" alt="Ko-fi"></a>
-  <img src="https://img.shields.io/badge/version-10-1b63e0?style=flat-square" alt="Version 10">
+  <img src="https://img.shields.io/badge/version-1.1-1b63e0?style=flat-square" alt="Version 1.1">
   <img src="https://img.shields.io/badge/license-all%20rights%20reserved-555?style=flat-square" alt="License">
 </p>
 
@@ -32,13 +32,22 @@
 - **Add your cards** from their Cardmarket page (the "TCG Price Hunter" bar under the title).
 - **Scans the offers** for each card: price, condition, language, seller country, rating, number of sales.
 - **Finds the best basket**: the cheapest combination of sellers using Cardmarket's real shipping rates (letter, tracked letter, parcel), for every country.
-- **Fills your Cardmarket cart** in one click. Nothing is bought: you check and pay yourself.
+- **Customs & import VAT included** (estimate) when a seller is outside your customs area (e.g. United Kingdom ↔ EU), so the best basket stays the real cheapest one.
+- **Fills your Cardmarket cart** in one click and lists what Cardmarket refused, with a button to rescan those cards. Nothing is bought, and shipping methods are not selected: you choose them and pay yourself.
 - Filters by **language**, **minimum condition**, **seller countries**, **rating** and **number of sales**; blocked sellers, ignored offers, categories.
-- **Few requests**: 1 request per card, rate-limited, automatic pause if Cardmarket slows down.
+- **Fast and careful**: 1 request per card, 3 cards at a time, never more than 280 cards per minute; captchas pause the scan and it resumes on its own.
 - Interface in **English, French, German, Spanish and Italian**.
 - **Export / import** your cards and settings.
 
 Works with every card sold on Cardmarket: Riftbound, Pokémon, Magic, One Piece, Lorcana, Yu-Gi-Oh!, Dragon Ball…
+
+## 🆕 What's new in 1.1
+
+- Much faster scans (3 cards at a time, live cards-per-minute average, even with 1000+ cards in your list).
+- Captchas no longer stop the scan: tick the box, wait a few seconds, it resumes and brings you back to the extension.
+- Add to cart: Cardmarket's answers are now really checked, expired tokens are renewed, and refused articles are listed (with a "rescan" button).
+- Customs and import VAT estimate between customs areas, explained in the Shipping costs tab.
+- Cards grouped by set with a colour bar, unticked cards greyed out, cleaner columns.
 
 ## 📦 Install on Chrome (from GitHub)
 

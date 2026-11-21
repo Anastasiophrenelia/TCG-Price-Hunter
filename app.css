@@ -65,7 +65,7 @@ input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--ok); curso
 .row { display: grid; align-items: center; gap: 12px; background: var(--row); border: 1px solid var(--line); border-radius: var(--r); padding: 8px 12px; }
 .row:hover { border-color: #2f3a49; }
 #listRows .row { grid-template-columns: 24px 44px 1fr 70px 190px 30px 30px; }
-#scanRows .row { grid-template-columns: 24px 44px 1fr 70px 90px 90px 100px 130px; }
+#scanRows .row { grid-template-columns: 24px 44px 1fr 70px 90px 90px 100px 150px; }
 .row img { width: 44px; height: 61px; object-fit: cover; border-radius: 4px; background: #0d1117; }
 .row .nm { font-weight: 600; }
 .row .sub { color: var(--mut); font-size: 12px; }
@@ -83,7 +83,7 @@ input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--ok); curso
 .num span { color: var(--mut); font-size: 11px; }
 .empty { text-align: center; color: var(--mut); padding: 50px 20px; border: 1px dashed var(--line); border-radius: var(--r); }
 .colhead { display: grid; gap: 12px; padding: 0 12px 2px; color: var(--mut); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
-#scanHead { grid-template-columns: 24px 44px 1fr 70px 90px 90px 100px 130px; }
+#scanHead { grid-template-columns: 24px 44px 1fr 70px 90px 90px 100px 150px; }
 
 /* Meilleur panier */
 .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }

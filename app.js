@@ -5,9 +5,11 @@
  */
 // ===== TCG Price Hunter — page principale (cartes scannées, meilleur panier, réglages) =====
 const ORIGIN = 'https://www.cardmarket.com';
-const COOLDOWN = 30;          // s de pause si Cardmarket freine (doublée à chaque fois)
-const BAN_PAUSE = 600;        // s de pause sur l'erreur Cloudflare 1015 (bloqué pour trop de requêtes) : 10 min
-const START_GAP = 1200;       // ms entre 2 requêtes : 50 cartes par minute, bien espacées
+const START_GAP = 1200;       // ms entre 2 requêtes par défaut : 50 par minute
+const BETA = false;           // version de test : affiche « BETA » à côté du numéro
+const CART_GAP = 1000;         // ms entre deux ajouts au panier
+const MAX_PER_MIN = 280;      // jamais plus de 280 cartes (requêtes) par minute
+const baseGap = () => Math.ceil(60000 / MAX_PER_MIN); // ≈ 215 ms minimum entre deux requêtes ; sinon la suivante part dès qu'une carte est finie
 const SCAN_TIMEOUT = 180000;  // une carte qui met plus de 3 min = échec
 
 const LANGS = [ // nom affiché par Cardmarket -> code court
@@ -56,10 +58,13 @@ let viewCat = '';     // '' = toutes, '__none' = sans catégorie, sinon le nom
 async function loadAll() {
   const d = await chrome.storage.local.get(null);
   list = d.cmList || {};
-  settings = { ...Optimizer.DEFAULTS, maxOffers: 50, freshHours: 0, concurrency: 3, avgScanSec: 8, minRating: 0, minSales: 0, defaultLangs: [], defaultCond: '', ...(d.cmSettings || {}) };
+  settings = { ...Optimizer.DEFAULTS, maxOffers: 50, freshHours: 0, concurrency: 3, avgScanSec: 8, customs: true, minRating: 0, minSales: 0, defaultLangs: [], defaultCond: '', ...(d.cmSettings || {}) };
   if (!settings.v714) { settings.concurrency = 3; settings.maxOffers = 50; settings.freshHours = 0; settings.v714 = true; }
   if (!settings.v69) { settings.maxOffers = 50; if (settings.freshHours == null) settings.freshHours = 6; settings.v69 = true; } // 1 requête par carte
-  settings.concurrency = Math.max(1, Math.min(3, +settings.concurrency || 3)); // 3 max : au-delà Cardmarket bloque (erreur 1015)
+  if (!settings.v101) { settings.concurrency = 3; settings.v101 = true; }
+  settings.concurrency = 3; // toujours 3 cartes scannées en même temps
+  delete settings.reqPerMin;
+  settings.maxOffers = 50; // 50 offres max par carte = 1 seule requête (au-delà, Cardmarket bloque : erreur 1015)
   // langue de l'extension : prise UNE fois au 1er lancement (langue du navigateur, pas l'IP → un VPN ne change rien)
   if (!settings.uiLang) {
     const det = I18N.detect();
@@ -75,6 +80,7 @@ async function loadAll() {
   cats = d.cmCats || [];
   ignored = d.cmIgnored || {};
   blocked = d.cmBlocked || {};
+  lastCartFailed = Array.isArray(d.cmCartFailed) ? d.cmCartFailed : [];
   scans = {};
   for (const k of Object.keys(d)) if (k.startsWith('scan_')) scans[k.slice(5)] = d[k];
 }
@@ -140,7 +146,7 @@ function ago(t) {
 // Toutes les requêtes passent par slot() : une toutes les 0,5 s au total (on ralentit si Cardmarket freine).
 // Captcha Cloudflare : un onglet s'ouvre devant toi pour que tu coches la case, le reste attend.
 const job = { active: false, queue: [], running: new Map(), done: 0, total: 0, failed: [], pausedUntil: 0, strikes: 0,
-  challenge: null, loggedOut: false, t0: 0, durations: [], nextReq: 0, gap: START_GAP, workerTab: null, appTab: null, timer: null, pauseReason: '', workerOpened: 0, lastErr: '' };
+  challenge: null, loggedOut: false, t0: 0, durations: [], nextReq: 0, gap: baseGap(), workerTab: null, appTab: null, timer: null, pauseReason: '', workerOpened: 0, lastErr: '' };
 const LAUNCH_STEP = 300; // (pour l'estimation)
 
 // filtres envoyés directement à Cardmarket : il ne renvoie que les offres utiles (triées par prix)
@@ -176,7 +182,8 @@ async function slot() {
     if (!job.active) throw new Error('stop');
     const now = Date.now();
     if (job.pausedUntil > now || job.challenge) { await sleep(400); continue; }
-    if (job.nextReq <= now) { job.nextReq = now + job.gap; return; }
+    if (job.probe && job.probeBusy) { await sleep(300); continue; } // après un captcha : une seule requête test à la fois
+    if (job.nextReq <= now) { job.nextReq = now + job.gap; if (job.probe) { job.probeBusy = true; return true; } return false; }
     await sleep(Math.min(job.nextReq - now, 300));
   }
 }
@@ -199,6 +206,20 @@ async function workerTab() {
   workerPromise = openWorker().finally(() => { workerPromise = null; });
   return workerPromise;
 }
+// remet la page de l'extension devant (onglet + fenêtre), même si on ne connaît pas encore son onglet
+async function backToApp() {
+  try {
+    let tab = job.appTab && (await chrome.tabs.get(job.appTab.id).catch(() => null));
+    if (!tab) {
+      tab = (await chrome.tabs.getCurrent().catch(() => null)) ||
+        (await chrome.tabs.query({ url: chrome.runtime.getURL('app.html') + '*' }).catch(() => []))[0];
+      if (tab) job.appTab = tab;
+    }
+    if (!tab) return;
+    await chrome.tabs.update(tab.id, { active: true });
+    if (chrome.windows && tab.windowId != null) await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+  } catch {}
+}
 async function openWorker() {
   const t = await chrome.tabs.create({ url: ORIGIN + '/fr', active: true, pinned: true, windowId: job.appTab ? job.appTab.windowId : undefined });
   job.workerTab = t.id;
@@ -206,6 +227,7 @@ async function openWorker() {
   // Chrome : "ne jamais mettre cet onglet en veille"
   try { await chrome.tabs.update(t.id, { autoDiscardable: false }); } catch {}
   await waitTab(t.id, 30000);
+  await sleep(1500); // on laisse la page Cardmarket finir de bien charger (cookies, scripts) avant la 1re requête
   // vérification anti-robot sur la porte ? on attend que tu coches la case
   const tt = await chrome.tabs.get(t.id).catch(() => null);
   if (tt && /Un instant|Just a moment|Attention Required|Vérification/i.test(tt.title || '')) {
@@ -219,7 +241,7 @@ async function openWorker() {
     job.challenge = null; banner(null);
   }
   // on te rend ta page
-  if (job.appTab) chrome.tabs.update(job.appTab.id, { active: true }).catch(() => {});
+  backToApp();
   return job.workerTab;
 }
 function waitTab(tabId, ms) {
@@ -254,7 +276,17 @@ async function rawFetch(url, form) {
     } catch (e) {
       job.lastErr = 'page Cardmarket : ' + e.message;
       // la porte ne répond pas : on essaie de la réveiller (recharger) une fois, sans la fermer
-      if (attempt === 0) { try { await chrome.tabs.reload(tabId); await waitTab(tabId, 30000); } catch { job.workerTab = null; } continue; }
+      if (attempt === 0) {
+        // la page est peut-être en train de charger ou d'afficher un captcha : on attend qu'elle soit prête, SANS la recharger
+        // (recharger relancerait un nouveau captcha). On ne recharge que si elle est prête et ne répond toujours pas.
+        const tt = await chrome.tabs.get(tabId).catch(() => null);
+        const busy = job.challenge || !tt || tt.status !== 'complete' || /Un instant|Just a moment|Attention Required|Vérification/i.test(tt.title || '');
+        try {
+          if (busy) { for (let i = 0; i < 200 && job.active && (job.challenge || (await chrome.tabs.get(tabId)).status !== 'complete'); i++) await sleep(500); await sleep(1500); }
+          else { await chrome.tabs.reload(tabId); await waitTab(tabId, 30000); await sleep(1500); }
+        } catch { job.workerTab = null; }
+        continue;
+      }
       return { status: 0, text: 'ERREUR ' + e.message };
     }
   }
@@ -295,40 +327,44 @@ function exportReqLog() {
 async function request(url, form) {
   let lastErr = '';
   for (let attempt = 0; attempt < 10; attempt++) {
-    await slot();
+    const probe = await slot();
     let res;
     const t0 = Date.now();
     try { res = await rawFetch(url, form); }
     catch (e) { res = { status: 0, text: String(e) }; }
+    if (probe) job.probeBusy = false;
     const t = res.text || '';
     const head = t.slice(0, 3000);
     {
       const r1015 = /error\s*1015|being rate limited/i.test(t.slice(0, 20000));
-      const result = res.status === 0 ? 'réseau' : r1015 ? '1015' : res.status === 429 ? '429'
-        : res.status === 403 && /Access denied|Too Many/i.test(head) ? '403'
+      const result = res.status === 0 ? 'réseau' : r1015 ? '1015'
         : /<title>\s*(Just a moment|Un instant|Attention Required)/i.test(head) ? 'captcha'
+        : res.status === 429 ? '429'
+        : res.status === 403 && /Access denied|Too Many/i.test(head) ? '403'
         : /^\s*Please login to continue/i.test(t) ? 'connexion' : 'ok';
       logReq({ kind: reqKind(url, form), status: res.status, result, ms: Date.now() - t0, gap: job.gap });
     }
     if (res.status === 0) { lastErr = t.replace(/^ERREUR\s*/, '').slice(0, 120); if ((job.workerOpened || 0) >= 2) break; continue; }
-    // Cloudflare "Error 1015 - You are being rate limited" = blocage temporaire pour trop de requêtes -> 10 min de pause
+    // Cloudflare "Error 1015 - You are being rate limited" = blocage temporaire pour trop de requêtes
     const is1015 = /error\s*1015|being rate limited/i.test(t.slice(0, 20000));
-    if (is1015 || res.status === 429 || (res.status === 403 && /Access denied|Too Many/i.test(head))) {
-      job.gap = Math.min(START_GAP * 3, Math.round(job.gap * 1.5)); // et on ralentit pour la suite
-      const secs = is1015 ? BAN_PAUSE : COOLDOWN * 2 ** Math.min(job.strikes++, 3);
-      const until = Date.now() + secs * 1000;
-      if (until > job.pausedUntil) {
-        if (job.pausedUntil < Date.now()) job.pauseStart = Date.now(); // nouvelle pause
-        job.pausedUntil = until;
-        job.pauseReason = is1015 ? 'Trop de requêtes : Cardmarket t\'a bloqué temporairement (erreur 1015)' : 'Cardmarket freine (trop de requêtes)';
-      }
-      continue;
-    }
-    if (/<title>\s*(Just a moment|Un instant|Attention Required)/i.test(head)) {
+    // captcha (vérification anti-robot) : Cloudflare l'envoie parfois avec le code 429 « trop de requêtes »,
+    // mais ce n'est PAS un blocage : on met tout en pause, tu coches la case, et le scan reprend
+    if (!is1015 && /<title>\s*(Just a moment|Un instant|Attention Required)/i.test(head)) {
       await solveChallenge(url.includes('AjaxAction') ? null : url);
       continue;
     }
+    if (is1015 || res.status === 429 || (res.status === 403 && /Access denied|Too Many/i.test(head))) {
+      // pas de pause : Cardmarket bloque de toute façon pendant un moment -> on arrête le scan tout de suite
+      // (les cartes déjà scannées sont gardées, relance plus tard pour le reste)
+      if (job.active) {
+        job.stopReason = is1015 ? T('Cardmarket t\'a bloqué pour trop de requêtes (erreur 1015) : scan arrêté. Les cartes déjà scannées sont gardées, relance le reste plus tard.')
+          : T('Cardmarket freine (trop de requêtes) : scan arrêté. Les cartes déjà scannées sont gardées, relance le reste plus tard.');
+        job.queue.length = 0; job.active = false;
+      }
+      throw new Error('stop');
+    }
     if (/^\s*Please login to continue/i.test(t)) return { login: true };
+    if (probe) { job.probe = false; job.challenges = 0; if (bannerKey === 'captcha-wait') banner(null); } // la requête test est passée : tout le monde repart
     return res;
   }
   throw new Error(lastErr ? 'erreur réseau : ' + lastErr : 'bloqué par Cardmarket');
@@ -340,14 +376,14 @@ function solveChallenge(url) {
   if (challengePromise) return challengePromise;
   challengePromise = (async () => {
     job.challenges = (job.challenges || 0) + 1;
-    if (job.challenges > 3) { // redemandé en boucle : on arrête proprement plutôt que d'ouvrir/fermer sans fin
+    if (job.challenges > 5) { // redemandé en boucle : on arrête proprement plutôt que d'ouvrir/fermer sans fin
       job.stopReason = "Cardmarket redemande la vérification anti-robot en boucle. Ouvre cardmarket.com, visite 2-3 pages normalement, puis relance le scan (avec moins de cartes en même temps).";
       job.active = false;
       return;
     }
     job.challenge = true;
     renderProgress();
-    banner("🛡️ Cardmarket demande une vérification anti-robot : coche la case « Vérifiez que vous êtes humain » dans la page Cardmarket qui vient de passer devant. Le scan reprend tout seul après.");
+    banner(T('🛡️ Cardmarket demande une vérification anti-robot : coche la case « Vérifiez que vous êtes humain » dans la page Cardmarket qui vient de passer devant, puis attends quelques secondes : le scan reprend tout seul. Ne recharge pas la page.'), 'captcha');
     let tabId = job.workerTab;
     try { if (tabId == null || !(await chrome.tabs.get(tabId))) tabId = null; } catch { tabId = null; }
     if (tabId == null) {
@@ -355,7 +391,10 @@ function solveChallenge(url) {
       tabId = job.workerTab = t.id;
       try { await chrome.tabs.update(tabId, { autoDiscardable: false }); } catch {}
     } else {
-      await chrome.tabs.update(tabId, { active: true, url: url || ORIGIN + '/fr' }).catch(() => {});
+      // la page affiche déjà le captcha (ou charge) : on la met juste devant, sans la recharger
+      const cur = await chrome.tabs.get(tabId).catch(() => null);
+      const showing = cur && (cur.status !== 'complete' || /Un instant|Just a moment|Attention Required|Vérification/i.test(cur.title || ''));
+      await chrome.tabs.update(tabId, showing ? { active: true } : { active: true, url: url || ORIGIN + '/fr' }).catch(() => {});
     }
     const t0 = Date.now();
     try {
@@ -367,8 +406,12 @@ function solveChallenge(url) {
         await sleep(1500);
       }
     } finally {
-      if (job.appTab) chrome.tabs.update(job.appTab.id, { active: true }).catch(() => {});
-      banner(null);
+      await backToApp(); // captcha validé : on te ramène sur la page de l'extension
+      if (job.active) banner(T('⏳ Vérification validée : attends quelques secondes, le scan reprend tout seul…'), 'captcha-wait'); else banner(null);
+      // on repart en douceur : la page a le temps de se poser, puis les requêtes reprennent
+      await sleep(2000);
+      job.nextReq = Date.now() + 1000;
+      job.probe = true; job.probeBusy = false; // 1 requête test d'abord ; si elle passe, les 3 repartent
       job.challenge = null;
       challengePromise = null;
     }
@@ -415,7 +458,7 @@ async function scanCard(id) {
     }
   }
 
-  if (info.img && info.img !== it.img) { it.img = info.img; saveList(); }
+  if (info.img && info.img !== it.img) { it.img = info.img; job.listDirty = true; } // enregistré une seule fois à la fin du scan
   scans[id] = { date: Date.now(), offers, url: it.url, partial, loggedOut, q: scanQuery(it) };
   await chrome.storage.local.set({ ['scan_' + id]: scans[id] });
 }
@@ -430,12 +473,12 @@ async function startScan(ids) {
   }
   try { chrome.permissions.request({ origins: [ORIGIN + '/*', 'https://product-images.s3.cardmarket.com/*', 'https://help.cardmarket.com/*'] }).catch(() => {}); } catch {}
   Object.assign(job, { active: true, queue: [...ids], running: new Map(), done: 0, total: ids.length, failed: [], pausedUntil: 0,
-    strikes: 0, challenge: null, loggedOut: false, logoutStop: false, t0: Date.now(), durations: [], nextReq: 0, gap: START_GAP, workerTab: null, workerOpened: 0, lastErr: '', challenges: 0, stopReason: '', pauseReason: '' });
+    strikes: 0, challenge: null, loggedOut: false, logoutStop: false, t0: Date.now(), durations: [], doneTimes: [], okIds: new Set(), nextReq: 0, gap: baseGap(), workerTab: null, workerOpened: 0, lastErr: '', challenges: 0, probe: false, probeBusy: false, stopReason: '', pauseReason: '' });
   job.appTab = await chrome.tabs.getCurrent().catch(() => null);
   job.timer = setInterval(renderProgress, 500);
   renderProgress();
 
-  const par = Math.max(1, Math.min(3, +settings.concurrency || 3));
+  const par = Math.max(1, Math.min(5, +settings.concurrency || 3));
   const worker = async () => {
     while (job.active && job.queue.length) {
       const id = job.queue.shift();
@@ -443,6 +486,7 @@ async function startScan(ids) {
       renderProgress();
       try {
         await scanCard(id);
+        job.okIds.add(id);
         job.durations.push((Date.now() - job.running.get(id).t0) / 1000);
         settings.avgScanSec = Math.max(2, Math.round(job.durations.reduce((a, b) => a + b, 0) / job.durations.length));
       } catch (e) {
@@ -452,23 +496,21 @@ async function startScan(ids) {
       }
       job.running.delete(id);
       job.done++;
-      renderCounts(); renderScanned();
+      job.doneTimes.push(Date.now());
+      renderSoon();
     }
   };
-  // 1re carte toute seule = vérif de connexion ; si c'est bon, les autres partent après 3 s
-  const queue = job.queue.splice(1);
-  await worker();
-  job.queue.push(...queue);
-  if (job.active && job.queue.length) {
-    await sleep(3000);
-    await Promise.all(Array.from({ length: par }, (_, k) => sleep(k * LAUNCH_STEP).then(worker)));
-  }
+  // toutes les cartes partent tout de suite ('par' à la fois) ; si tu n'es pas connecté, la 1re réponse arrête tout
+  await Promise.all(Array.from({ length: par }, worker));
   endScan(!job.active);
 }
 
 function endScan(stopped = false) {
   clearInterval(job.timer);
   job.active = false;
+  if (job.listDirty) { job.listDirty = false; saveList(); }
+  // cartes re-scannées : on les enlève de la liste « Pas ajoutés au panier » (recalcule puis réessaie l'ajout)
+  if (job.okIds && lastCartFailed.some((f) => job.okIds.has(f.id))) setCartFailed(lastCartFailed.filter((f) => !job.okIds.has(f.id)));
   job.challenge = null;
   if (job.workerTab != null) { chrome.tabs.remove(job.workerTab).catch(() => {}); job.workerTab = null; }
   const ok = job.done - job.failed.length;
@@ -483,6 +525,7 @@ function endScan(stopped = false) {
   $('progTitle').textContent = stopped ? 'Scan arrêté' : 'Scan terminé';
   $('progCount').textContent = `${job.done}/${job.total}`;
   $('progText').textContent = (I18N.getLang() === 'fr' ? `✔ ${ok} carte${ok > 1 ? 's' : ''} scannée${ok > 1 ? 's' : ''}` : TF('✔ {n} carte(s) scannée(s)', { n: ok })) + (job.failed.length ? ' · ' + TF('{n} échec(s)', { n: job.failed.length }) : '');
+  $('progRate').textContent = fmtRate(cardsPerMin(true));
   $('progEta').textContent = TF('⏱ Durée totale : {a}', { a: fmtDur((Date.now() - job.t0) / 1000) });
   $('progList').innerHTML = '';
   $('stopBtn').hidden = true;
@@ -499,17 +542,23 @@ const fmtDur = (sec) => {
   const m = Math.floor(sec / 60), r = sec % 60;
   return m < 60 ? `${m} min ${String(r).padStart(2, '0')}` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}`;
 };
-function estimateSec(nCards) {
-  const per = +settings.avgScanSec || 8;
-  const par = Math.max(1, Math.min(+settings.concurrency || 3, 3, nCards));
-  return Math.max(nCards * START_GAP / 1000, Math.ceil(nCards / par) * per) + (nCards > 1 ? 3 : 0); // 1 requête toutes les 3 s
+// vitesse réelle : cartes finies sur la dernière minute (sans compter l'ouverture de la page Cardmarket au début)
+function cardsPerMin(final) {
+  const ts = job.doneTimes || [];
+  if (ts.length < 2) return 0;
+  const now = final ? ts[ts.length - 1] : Date.now();
+  if (final || now - ts[0] < 60000) { const m = (now - ts[0]) / 60000; return m > 0.02 ? (ts.length - 1) / m : 0; }
+  return ts.filter((t) => t > now - 60000).length;
+}
+const fmtRate = (r) => r ? TF('⌀ {n} cartes par minute', { n: r.toLocaleString(I18N.getLang(), { maximumFractionDigits: r < 10 ? 1 : 0 }) }) : '';
+// estimation : 130 cartes par minute + ~7 s de démarrage (ouverture et chargement de la page Cardmarket)
+const EST_PER_MIN = 130, EST_START_SEC = 7;
+function estimateSec(nCards, started) {
+  return nCards ? (started ? 0 : EST_START_SEC) + (nCards / EST_PER_MIN) * 60 : 0;
 }
 function etaText() {
-  const per = +settings.avgScanSec || 8;
   const now = Date.now();
-  const runningLeft = [...job.running.values()].map((r) => Math.max(1, per - (now - r.t0) / 1000));
-  const par = Math.max(1, Math.min(+settings.concurrency || 3, 3, job.queue.length + job.running.size));
-  let left = (runningLeft.length ? Math.max(...runningLeft) : 0) + Math.ceil(job.queue.length / par) * per;
+  let left = estimateSec(job.queue.length + job.running.size, job.done > 0);
   if (job.pausedUntil > now) left += (job.pausedUntil - now) / 1000;
   return TF('⏱ Écoulé {a} · reste environ {b}', { a: fmtDur((now - job.t0) / 1000), b: fmtDur(left) });
 }
@@ -535,7 +584,8 @@ function renderCartProg() {
   const cur = [...job.running.values()][0];
   const wait = Math.ceil((job.pausedUntil - Date.now()) / 1000);
   $('cpText').textContent = wait > 0 ? `⏸ ${T('Cardmarket freine')} : ${fmtDur(wait)}…` : job.challenge ? T('🛡️ Captcha à valider dans l\'onglet ouvert…') : cur ? cur.label : '';
-  const left = (job.total - job.done) * (job.gap || START_GAP) / 1000;
+  const el = (Date.now() - job.t0) / 1000;
+  const left = (job.total - job.done) * (job.done ? el / job.done : 1);
   $('cpEta').textContent = `${pct} % · ` + TF('reste environ {a}', { a: fmtDur(left) }) + (job.failed.length ? ' · ' + TF('{n} échec(s)', { n: job.failed.length }) : '');
 }
 
@@ -568,9 +618,11 @@ function renderProgress() {
     job.pauseShown = true;
   } else if (job.pauseShown) { banner(null); job.pauseShown = false; }
   $('progText').textContent = wait > 0 ? `⏸ ${/1015/.test(job.pauseReason) ? 'Trop de requêtes (erreur 1015)' : 'Cardmarket freine'} : pause ${fmtDur(wait)}…`
-    : job.challenge ? '🛡️ Captcha à valider dans l\'onglet ouvert…'
+    : job.challenge ? T('🛡️ Captcha à valider dans l\'onglet ouvert…')
+    : job.probe ? T('⏳ Captcha validé : reprise en cours, attends quelques secondes…')
     : TF('{n} en cours · {q} en attente', { n: job.running.size, q: job.queue.length }) + (job.failed.length ? ' · ' + TF('{n} échec(s)', { n: job.failed.length }) : '');
-  $('progEta').textContent = job.challenge ? '⏱ En pause le temps du captcha' : job.kind === 'cart' ? '' : etaText();
+  $('progRate').textContent = job.kind !== 'cart' ? fmtRate(cardsPerMin()) : '';
+  $('progEta').textContent = job.challenge ? T('⏱ En pause le temps du captcha, attends…') : job.probe ? T('⏱ Reprise du scan…') : job.kind === 'cart' ? '' : etaText();
   $('progList').innerHTML = [...job.running.entries()].map(([id, r]) =>
     `<div>⏳ ${esc(r.label || list[id]?.name || id)}${r.rows ? ` <i>${r.rows} offres</i>` : ''}</div>`).join('');
 }
@@ -579,11 +631,26 @@ function renderProgress() {
 // Même chose que le bouton 🛒 "Ajouter à mon panier" de chaque offre :
 // POST AjaxAction/ShoppingCart_Add_AddArticlesFromProductPage { __cmtkn, idArticle[N], amount[N] }
 // Rien n'est acheté : tu vérifies et tu payes toi-même sur Cardmarket.
+// réponse de Cardmarket à un ajout au panier : <ajaxResponse><resultType>base64</resultType><systemMessage>base64(HTML)</systemMessage>
+let lastCartFailed = [];
+const setCartFailed = (arr) => { lastCartFailed = arr; chrome.storage.local.set({ cmCartFailed: arr }); };
+// cartes (de ta liste) qui n'ont pas pu aller dans le panier
+const cartFailedIds = () => [...new Set(lastCartFailed.map((f) => f.id || Object.values(list).find((it) => it.url === f.url)?.id).filter((id) => id && list[id]))];
+function b64(s) { try { return new TextDecoder().decode(Uint8Array.from(atob((s || '').trim()), (c) => c.charCodeAt(0))); } catch { return ''; } }
+function cartAnswer(t) {
+  const type = b64((t.match(/<resultType>([\s\S]*?)<\/resultType>/) || [])[1]).trim().toLowerCase();
+  const html = b64((t.match(/<systemMessage>([\s\S]*?)<\/systemMessage>/) || [])[1]);
+  const msg = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 140);
+  const bad = type === 'error' || /alert-danger|alert-warning/.test(html) || /<error\b/i.test(t);
+  if (bad) return { ok: false, msg: msg || 'refusé par Cardmarket' };
+  if (!/<ajaxResponse/i.test(t) && !type) return { ok: false, msg: 'réponse inattendue de Cardmarket' };
+  return { ok: true, msg };
+}
 async function addToCart(orders) {
   if (job.active) return banner('Un scan ou un ajout est déjà en cours, attends la fin.');
   const items = [];
   orders.forEach((o) => o.lines.forEach(({ line, opt }) => opt.picked.forEach((p) =>
-    items.push({ aid: p.aid, take: p.take, price: p.price, name: line.name, seller: o.seller, url: line.url }))));
+    items.push({ id: line.id, aid: p.aid, take: p.take, price: p.price, name: line.name, seller: o.seller, url: line.url }))));
   if (!items.length) return;
   const noAid = items.filter((i) => !i.aid);
   if (noAid.length) return banner(`Re-scanne d'abord ces cartes (scannées avec une ancienne version, il manque le n° d'article) : ${[...new Set(noAid.map((i) => i.name))].join(', ')}`);
@@ -593,8 +660,9 @@ async function addToCart(orders) {
   try { chrome.permissions.request({ origins: [ORIGIN + '/*'] }).catch(() => {}); } catch {}
 
   Object.assign(job, { active: true, queue: [], running: new Map(), done: 0, total: items.length, failed: [], pausedUntil: 0, strikes: 0,
-    challenge: null, loggedOut: false, t0: Date.now(), durations: [], nextReq: 0, gap: START_GAP, workerTab: null, workerOpened: 0,
-    lastErr: '', challenges: 0, stopReason: '', pauseReason: '', kind: 'cart' });
+    challenge: null, loggedOut: false, t0: Date.now(), durations: [], nextReq: 0, gap: baseGap(), workerTab: null, workerOpened: 0,
+    lastErr: '', challenges: 0, probe: false, probeBusy: false, stopReason: '', pauseReason: '', kind: 'cart' });
+  job.gap = CART_GAP; // ajout au panier : plus doux qu'un scan (1 article par seconde), sinon Cardmarket refuse en silence
   job.appTab = await chrome.tabs.getCurrent().catch(() => null);
   job.timer = setInterval(renderProgress, 500);
   job.cartItems = items.length;
@@ -602,35 +670,60 @@ async function addToCart(orders) {
   renderProgress();
   const game = new URL(ORIGIN + items[0].url).pathname.split('/')[2];
   let token = null;
+  const getToken = async (it) => { // jeton de sécurité de Cardmarket (le même que celui des boutons de la page)
+    const res = await request(ORIGIN + it.url.split('#')[0]);
+    const d = new DOMParser().parseFromString(res.text || '', 'text/html');
+    if (d.querySelector('input[name="username"]')) throw new Error("tu n'es pas connecté à Cardmarket");
+    const tk = d.querySelector('input[name="__cmtkn"]')?.value;
+    if (!tk) throw new Error('jeton Cardmarket introuvable');
+    return tk;
+  };
+  const failedItems = [];
   for (const it of items) {
     if (!job.active) break;
     job.running.set(it.aid, { t0: Date.now(), rows: 0, label: `${it.name} ×${it.take} — ${it.seller}` });
     renderProgress();
     try {
-      if (!token) { // jeton de sécurité de Cardmarket (le même que celui des boutons de la page)
-        const res = await request(ORIGIN + it.url.split('#')[0]);
-        const d = new DOMParser().parseFromString(res.text || '', 'text/html');
-        if (d.querySelector('input[name="username"]')) throw new Error("tu n'es pas connecté à Cardmarket");
-        token = d.querySelector('input[name="__cmtkn"]')?.value;
-        if (!token) throw new Error('jeton Cardmarket introuvable');
-      }
       const [, lang, g] = new URL(ORIGIN + it.url).pathname.split('/');
-      const res = await request(`${ORIGIN}/${lang}/${g}/AjaxAction/ShoppingCart_Add_AddArticlesFromProductPage`,
-        { __cmtkn: token, [`idArticle[${it.aid}]`]: it.aid, [`amount[${it.aid}]`]: String(it.take) });
-      const t = res.text || '';
-      if (res.login) throw new Error('connexion demandée');
-      if (res.status !== 200) throw new Error(`refusé (statut ${res.status})`);
-      if (/<error\b|n'est plus disponible|plus en stock|not available|no longer/i.test(t)) {
-        throw new Error((t.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100)) || 'refusé');
+      for (let tries = 0; ; tries++) {
+        if (!token) token = await getToken(it);
+        const res = await request(`${ORIGIN}/${lang}/${g}/AjaxAction/ShoppingCart_Add_AddArticlesFromProductPage`,
+          { __cmtkn: token, [`idArticle[${it.aid}]`]: it.aid, [`amount[${it.aid}]`]: String(it.take) });
+        if (res.login) throw new Error('connexion demandée');
+        if (res.status !== 200) throw new Error(`refusé (statut ${res.status})`);
+        const ans = cartAnswer(res.text || '');
+        if (ans.ok) break;
+        // « Time-out, merci de réessayer » = jeton périmé : on en reprend un et on réessaie une fois
+        if (tries === 0 && /time-?out|refresh|réessayer|actualise/i.test(ans.msg)) { token = null; continue; }
+        throw new Error(ans.msg || 'refusé par Cardmarket');
       }
     } catch (e) {
       if (e.message === 'stop') { job.running.delete(it.aid); break; }
       job.failed.push(`${it.name} chez ${it.seller} (${e.message})`);
+      failedItems.push({ ...it, reason: e.message });
       token = null;
     }
     job.running.delete(it.aid);
     job.done++;
   }
+  // vérification : on regarde ce qui est VRAIMENT dans ton panier Cardmarket
+  if (job.done) {
+    try {
+      const [, lang] = new URL(ORIGIN + items[0].url).pathname.split('/');
+      const res = await request(`${ORIGIN}/${lang}/${game}/ShoppingCart`);
+      const html = res.text || '';
+      const tried = items.slice(0, job.done).filter((it) => !failedItems.some((f) => f.aid === it.aid));
+      const has = (aid) => new RegExp(`(^|\\D)${aid}(\\D|$)`).test(html);
+      const found = tried.filter((it) => has(it.aid));
+      if (found.length) { // la page du panier montre bien les n° d'articles : on peut se fier à la vérification
+        for (const it of tried) if (!has(it.aid)) {
+          job.failed.push(`${it.name} chez ${it.seller} (pas dans le panier)`);
+          failedItems.push({ ...it, reason: T('pas dans ton panier (refusé par Cardmarket)') });
+        }
+      }
+    } catch (e) { /* vérification impossible : on garde le résultat des réponses */ }
+  }
+  setCartFailed(failedItems);
   clearInterval(job.timer);
   const stopped = !job.active;
   showCartProg(false, stopped);
@@ -643,8 +736,9 @@ async function addToCart(orders) {
   $('progEta').textContent = ''; $('progList').innerHTML = ''; $('stopBtn').hidden = true; $('barFill').style.width = '100%';
   bannerHtml(`<b>🛒 ${ok} article${ok > 1 ? 's' : ''} ajouté${ok > 1 ? 's' : ''} à ton panier ${CM_LINK}.</b> ` +
     `<a href="${ORIGIN}/fr/${encodeURIComponent(game)}/ShoppingCart" target="_blank">Ouvrir mon panier Cardmarket</a> pour vérifier et payer.` +
-    (job.failed.length ? `<br>❌ Pas ajoutés (souvent : déjà vendus, re-scanne) : ${job.failed.map(esc).join(' · ')}` : '') +
+    (job.failed.length ? `<br>❌ ${job.failed.length} pas ajouté(s) au panier : la liste est à droite, dans « Pas ajoutés au panier ».` : '') +
     (job.stopReason ? `<br>⏹ ${esc(job.stopReason)}` : ''));
+  if (lastResult) renderBest(); // affiche la liste « Pas ajoutés au panier » à droite
 }
 
 // ---------- Vue : Cartes scannées ----------
@@ -707,15 +801,23 @@ function condSelect(it) {
     <a class="help" href="https://help.cardmarket.com/fr/CardCondition" target="_blank" title="À quoi correspondent les états ?">?</a>`;
 }
 
+// série d'une carte = l'extension dans son lien (/Pokemon/Products/Singles/<Série>/…), sinon le type de produit
+const SER_COLORS = ['#2f80ff', '#ef4444', '#f97316', '#facc15', '#22c55e', '#8b5cf6', '#ec4899', '#a0603a', '#f1f5f9']; // bleu, rouge, orange, jaune, vert, violet, rose, marron, blanc
+const seriesKey = (it) => { const p = (it.url || '').split('/'); return (p[2] || '') + '/' + (p[4] === 'Singles' ? p[5] : p[4] || ''); };
 function renderScanned() {
   const q = norm($('qScan').value);
   const all = items();
   const noOffer = (it) => (scans[it.id] && (missingLang(it) || !filteredOffers(it).length) ? 1 : 0);
-  const rows = all.filter((it) => inView(it, q)).sort((a, b) => noOffer(b) - noOffer(a)); // cartes sans offre tout en haut
+  // cartes regroupées par série (même nom = ensemble, dans l'ordre où la série apparaît), cartes sans offre tout en haut
+  const serIdx = {};
+  all.forEach((it) => { const k = seriesKey(it); if (!(k in serIdx)) serIdx[k] = Object.keys(serIdx).length; });
+  const rows = all.filter((it) => inView(it, q)).map((it, i) => ({ it, i }))
+    .sort((a, b) => noOffer(b.it) - noOffer(a.it) || serIdx[seriesKey(a.it)] - serIdx[seriesKey(b.it)] || a.i - b.i).map((x) => x.it);
   renderLangBar(); renderCatBar();
   const nChecked = all.filter((it) => it.checked).length;
   $('scanSel').textContent = `${T('🔍 Scanner la sélection')} (${nChecked})`;
   $('scanAll').textContent = `${T('Tout scanner')} (${all.length})`;
+  { const nf = cartFailedIds().length; $('scanFailed').hidden = !nf; $('scanFailed').textContent = `${T('🔁 Re-scanner les pas ajoutées au panier')} (${nf})`; }
   $('scanEstimate').textContent = nChecked ? TF('⏱ ≈ {a} pour {n} carte(s)', { a: fmtDur(estimateSec(nChecked)), n: nChecked }) : '';
   if (!rows.length && all.length) {
     $('scanRows').innerHTML = `<div class="empty">Aucune carte dans cette catégorie.<br>Coche des cartes et utilise « 📁 Ranger la sélection dans… », ou change la catégorie d'une carte avec son menu.</div>`;
@@ -725,6 +827,10 @@ function renderScanned() {
     $('scanRows').innerHTML = `<div class="empty"><b>Aucune carte pour l'instant.</b><br><br>Sur Cardmarket, ouvre une carte : sous le titre il y a <b>🔍 Scanner cette page</b> et <b>➕ Ajouter sans scanner</b>.</div>`;
     return;
   }
+  // une couleur par série (extension) : barre à gauche de chaque carte, pour repérer les séries en descendant
+  // une couleur bien distincte par série : la 1re toujours en bleu, puis rouge, orange, jaune, vert, violet, rose, marron, blanc (puis on recommence)
+  const serColor = {};
+  Object.entries(serIdx).forEach(([k, i]) => { serColor[k] = SER_COLORS[i % SER_COLORS.length]; });
   $('scanRows').innerHTML = `<div class="colhead" id="scanHead"><span></span><span></span><span>Carte · langue · état</span><span class="num">Qté</span><span class="num">Offres</span><span class="num">Dès</span><span class="num">Vendeurs</span><span class="num">Scan</span></div>` +
     rows.map((it) => {
       const s = scans[it.id];
@@ -743,7 +849,7 @@ function renderScanned() {
         if (s.loggedOut) tags.push('<span class="tag warn">non connecté (50 max)</span>');
         if (s.offers.length && s.offers[0].rating === undefined && (+settings.minRating || +settings.minSales)) tags.push('<span class="tag warn">re-scanne pour filtrer les vendeurs</span>');
       }
-      return `<div class="row ${missingLang(it) ? 'missing' : ''}" data-id="${esc(it.id)}">
+      return `<div class="row ser ${missingLang(it) ? 'missing' : ''} ${it.checked ? '' : 'off'}" data-id="${esc(it.id)}" style="--ser:${serColor[seriesKey(it)]}">
         <input type="checkbox" data-chk ${it.checked ? 'checked' : ''} title="Sélection (scan + calcul)">
         <a href="${esc(ORIGIN + it.url)}" target="_blank" title="Voir la carte sur Cardmarket"><img loading="lazy" src="${esc(imgUrl(it.img))}" alt=""></a>
         <div class="cardcol"><div class="nm">${esc(it.name)}</div><div class="sub">${esc(it.sub)}${it.cat && cats.includes(it.cat) ? ` · <span class="catname">📁 ${esc(it.cat)}</span>` : ''}</div>
@@ -787,6 +893,56 @@ async function ensureShipTables() {
   ids.add(+settings.myCountry);
   await Promise.all([...ids].map((id) => loadShipTable(id, settings.myCountry)));
 }
+// ---------- Douane / TVA à l'import (estimation) ----------
+// Pays de l'UE (union douanière) : entre eux, pas de douane. Hors UE : Royaume-Uni, Suisse/Liechtenstein, Norvège, Islande, Japon…
+const EU_IDS = new Set([12, 7, 1, 2, 3, 5, 35, 8, 10, 9, 11, 14, 15, 16, 17, 21, 19, 20, 22, 23, 25, 26, 27, 6, 31, 30, 28]);
+// TVA normale du pays où tu te fais livrer (%)
+const VAT_RATE = { 12: 20, 7: 19, 1: 20, 2: 21, 3: 20, 5: 19, 35: 25, 8: 25, 10: 21, 9: 24, 11: 25.5, 14: 24, 15: 27, 16: 23, 17: 22, 21: 21, 19: 21,
+  20: 17, 22: 18, 23: 21, 25: 23, 26: 23, 27: 21, 6: 21, 31: 23, 30: 22, 28: 25, 13: 20, 24: 25, 37: 24 };
+const customsZone = (id) => (EU_IDS.has(id) ? 'EU' : id === 4 || id === 18 ? 'CH' : 'C' + id);
+// règle pour un vendeur de ce pays -> toi : TVA du pays de livraison sur (cartes + port)
+//  + UE : droit de douane fixe de 3 € par colis jusqu'à 150 € (depuis juillet 2026), au-delà frais de dédouanement du transporteur (~10 €)
+//  + Royaume-Uni / Norvège : au-delà de 135 £ / 3000 NOK, frais de dédouanement du transporteur (~10 €)
+//  Suisse : Cardmarket prend déjà la TVA sur toutes les ventes vers la Suisse, d'où qu'elles viennent -> rien en plus selon le pays
+const customsRule = (from, to) => { // règle entre deux pays (ids), ou null s'il n'y a rien à payer en plus
+  if (!from || !to || customsZone(from) === customsZone(to)) return null;
+  if (to === 4 || to === 18) return null;
+  const rate = (VAT_RATE[to] || 0) / 100;
+  if (EU_IDS.has(to)) return { rate, limit: 150, flat: 3, over: 10 };
+  if (to === 13) return { rate, limit: 155, flat: 0, over: 10 };
+  if (to === 24) return { rate, limit: 260, flat: 0, over: 10 };
+  return { rate, limit: Infinity, flat: 0, over: 0 };
+};
+const customsFor = (country) => (settings.customs ? customsRule(countryId(country), +settings.myCountry) : null);
+
+// explication de la douane pour un trajet (vue Frais de port), avec des exemples chiffrés
+function customsExplain(from, to, table) {
+  const A = esc(countryName(from)), B = esc(countryName(to));
+  const zoneName = (id) => (EU_IDS.has(id) ? T('Union européenne') : id === 4 || id === 18 ? T('Suisse et Liechtenstein') : esc(countryName(id)));
+  if (from === to) return `<div class="customs ok"><b>${esc(T('✅ Pas de douane : même pays.'))}</b></div>`;
+  if (customsZone(from) === customsZone(to)) return `<div class="customs ok"><b>${esc(TF('✅ Pas de douane de {a} vers {b} : même zone douanière ({z}).', { a: countryName(from), b: countryName(to), z: zoneName(to) }))}</b></div>`;
+  if (to === 4 || to === 18) return `<div class="customs ok"><b>${esc(T('ℹ️ Pas de surcoût lié au pays du vendeur : Cardmarket prend déjà la TVA suisse sur toutes les ventes vers la Suisse et le Liechtenstein, même entre vendeurs suisses.'))}</b></div>`;
+  const R = customsRule(from, to);
+  const lines = [TF('• la TVA de {b} ({r} %) sur cartes + port ;', { b: countryName(to), r: String(Math.round(R.rate * 1000) / 10).replace('.', ',') })];
+  if (EU_IDS.has(to)) lines.push(T("• + un droit de douane fixe de 3 € par colis jusqu'à 150 € (UE, depuis juillet 2026) ;"), T('• au-delà de 150 € : environ 10 € de frais de dédouanement du transporteur à la place.'));
+  else if (to === 13) lines.push(T('• au-delà de 135 £ (≈ 155 €) : environ 10 € de frais de dédouanement du transporteur.'));
+  else if (to === 24) lines.push(T('• au-delà de 3000 NOK (≈ 260 €) : environ 10 € de frais de dédouanement du transporteur.'));
+  const S = { ...Optimizer.DEFAULTS, ...settings, alwaysTracked: false };
+  const ex = [[4, 5], [17, 20], [40, 50], [40, 120], [60, 200]].map(([n, v]) => {
+    const port = Optimizer.shipping(n, v, false, S, Array.isArray(table) && table.length ? table : null).cost;
+    const base = v + port, vat = base * R.rate, fix = base <= R.limit ? R.flat : R.over, duty = vat + fix;
+    return `<tr><td>${esc(TF('{n} cartes pour {v}', { n, v: euro(v) }))}</td><td class="r">${euro(port)}</td><td class="r">${euro(vat)}</td><td class="r">${fix ? euro(fix) : '—'}</td><td class="r"><b>${euro(duty)}</b></td><td class="r">${euro(base + duty)}</td></tr>`;
+  }).join('');
+  return `<div class="customs">
+    <h4>${esc(TF('🛃 Douane {a} → {b}', { a: countryName(from), b: countryName(to) }))}</h4>
+    <p>${esc(TF('Le vendeur est hors de ta zone douanière : à la livraison en {b}, il faut compter :', { b: countryName(to) }))}</p>
+    <p>${lines.map(esc).join('<br>')}</p>
+    <table class="t"><tr><th>${esc(T('Exemple de commande'))}</th><th class="r">${esc(T('Port'))}</th><th class="r">${esc(T('TVA'))}</th><th class="r">${esc(T('Droit / dédouanement'))}</th><th class="r">${esc(T('Douane'))}</th><th class="r">${esc(T('Total'))}</th></tr>${ex}</table>
+    <p class="muted">${esc(T('Ces frais sont ajoutés automatiquement à chaque commande dans « Meilleur panier » : un vendeur de ce pays peut donc perdre face à un vendeur plus proche.'))}
+    ${esc(T('Estimation : les frais du transporteur varient, et le droit de 3 € est compté une fois par colis.'))}</p>
+    ${settings.customs ? '' : `<p class="warn">${esc(T("⚠ Désactivé dans les Réglages : la douane n'est pas comptée dans le meilleur panier."))}</p>`}
+  </div>`;
+}
 const shipTableFor = (country) => {
   const t = shipTables[`${countryId(country)}_${settings.myCountry}`];
   return Array.isArray(t) && t.length ? t : null;
@@ -797,7 +953,7 @@ function compute() {
   const lines = items()
     .filter((it) => it.checked && scans[it.id])
     .map((it) => ({ id: it.id, name: it.name, sub: it.sub, game: it.game, url: it.url, qty: it.qty, offers: filteredOffers(it) }));
-  lastResult = lines.length ? { r: Optimizer.optimize(lines, { ...settings, shipTableFor }), lines, date: Date.now() } : null;
+  lastResult = lines.length ? { r: Optimizer.optimize(lines, { ...settings, shipTableFor, customsFor }), lines, date: Date.now() } : null;
   // on garde le plan pour entourer en vert les bons vendeurs sur les pages Cardmarket
   if (lastResult) {
     const cards = {};
@@ -833,33 +989,35 @@ function renderBest() {
   h += `<div class="tiles">
     <div class="tile main"><div class="k">Total à payer</div><div class="v">${euro(r.total)}</div></div>
     <div class="tile"><div class="k">Cartes</div><div class="v">${euro(r.items)}</div></div>
-    <div class="tile"><div class="k">${TP(`Frais de port · ${r.orders.length} commande${r.orders.length > 1 ? 's' : ''}`, 'Frais de port · {n} commande(s)', { n: r.orders.length })}</div><div class="v">${euro(r.ship)}</div></div>
+    <div class="tile"><div class="k">${TP(`Frais de port · ${r.orders.length} commande${r.orders.length > 1 ? 's' : ''}`, 'Frais de port · {n} commande(s)', { n: r.orders.length })}</div><div class="v">${euro(r.ship)}</div>${r.duty > 0.004 ? `<div class="k" style="margin-top:4px">${esc(TF('+ douane / TVA ≈ {a}', { a: euro(r.duty) }))}</div>` : ''}</div>
     <div class="tile"><div class="k">Tu économises (vs chaque carte au moins cher)</div><div class="v" style="color:${saving > 0.005 ? 'var(--ok)' : 'var(--mut)'}">${saving > 0.005 ? euro(saving) : '0 €'}</div></div>
   </div>`;
 
   // comparaison des stratégies
   const best = Math.min(r.total, r.naive.total, r.single ? r.single.total : Infinity);
-  const row = (label, a, b, c, isBest) => `<tr class="${isBest ? 'best' : ''}"><td>${label}</td><td class="r">${a}</td><td class="r">${b}</td><td class="r">${c}</td></tr>`;
+  const hasDuty = r.duty > 0.004 || r.naive.duty > 0.004 || (r.single && r.single.duty > 0.004);
+  const dutyCell = (d) => (hasDuty ? `<td class="r">${d == null ? '—' : euro(d)}</td>` : '');
+  const row = (label, a, b, c, isBest, d) => `<tr class="${isBest ? 'best' : ''}"><td>${label}</td><td class="r">${a}</td><td class="r">${b}</td>${dutyCell(d)}<td class="r">${c}</td></tr>`;
   h += `<div class="panel"><h3>Comparaison</h3><table class="t">
-    <tr><th>Stratégie</th><th class="r">Cartes</th><th class="r">Port</th><th class="r">Total</th></tr>
-    ${row(I18N.getLang() === 'fr' ? `🏆 Meilleur panier — ${r.orders.length} commande${r.orders.length > 1 ? 's' : ''}` : TF('🏆 Meilleur panier — {n} commande(s)', { n: r.orders.length }), euro(r.items), euro(r.ship), euro(r.total), r.total <= best + 1e-9)}
-    ${row('Chaque carte chez le moins cher (sans regarder le port)', euro(r.naive.items), euro(r.naive.ship), euro(r.naive.total), false)}
+    <tr><th>Stratégie</th><th class="r">Cartes</th><th class="r">Port</th>${hasDuty ? `<th class="r">${esc(T('Douane / TVA'))}</th>` : ''}<th class="r">Total</th></tr>
+    ${row(I18N.getLang() === 'fr' ? `🏆 Meilleur panier — ${r.orders.length} commande${r.orders.length > 1 ? 's' : ''}` : TF('🏆 Meilleur panier — {n} commande(s)', { n: r.orders.length }), euro(r.items), euro(r.ship), euro(r.total), r.total <= best + 1e-9, r.duty)}
+    ${row('Chaque carte chez le moins cher (sans regarder le port)', euro(r.naive.items), euro(r.naive.ship), euro(r.naive.total), false, r.naive.duty)}
     ${r.single
-      ? row(`Tout chez un seul vendeur : <a href="${esc(sellerUrl(r.single.seller, game))}" target="_blank">${esc(r.single.seller)}</a>`, euro(r.single.items), euro(r.single.ship), euro(r.single.total), false)
-      : row(`Tout chez un seul vendeur : <span class="muted">personne n'a tout (le meilleur en a ${r.top[0] ? r.top[0].covered : 0}/${nAvail})</span>`, '—', '—', '—', false)}
+      ? row(`Tout chez un seul vendeur : <a href="${esc(sellerUrl(r.single.seller, game))}" target="_blank">${esc(r.single.seller)}</a>`, euro(r.single.items), euro(r.single.ship), euro(r.single.total), false, r.single.duty)
+      : row(`Tout chez un seul vendeur : <span class="muted">personne n'a tout (le meilleur en a ${r.top[0] ? r.top[0].covered : 0}/${nAvail})</span>`, '—', '—', '—', false, null)}
   </table></div>`;
 
   // commandes
   const nArt = r.orders.reduce((a, o) => a + o.n, 0);
   h += `<div class="cartbar"><button class="btn primary" data-cart="all">${TP(`🛒 Tout ajouter à mon panier Cardmarket (${nArt} carte${nArt > 1 ? 's' : ''})`, '🛒 Tout ajouter à mon panier Cardmarket ({n} carte(s))', { n: nArt })}</button>
-    <span class="muted">Rien n'est acheté : ça remplit ton panier Cardmarket, tu vérifies et tu payes toi-même.</span></div>`;
+    <span class="muted">⚠ Les modes de livraison ne sont pas sélectionnés : tu dois les choisir toi-même dans ton panier Cardmarket avant de payer.</span></div>`;
   h += `<h2 class="sectionTitle">🛒 Les commandes à passer</h2>`;
   h += r.orders.map((o, k) => `<div class="order ${k > 2 ? 'closed' : ''}">
       <div class="oh" data-toggle>
         <span class="chev">▾</span>
         <div><div class="who"><a href="${esc(sellerUrl(o.seller, game))}" target="_blank">${esc(o.seller)}</a></div>
-          <div class="tags"><span class="tag">${TP(`${o.n} carte${o.n > 1 ? 's' : ''}`, '{n} carte(s)', { n: o.n })}</span><span class="tag ok">${esc(o.shipName)} ${euro(o.ship)}</span>${o.tracked ? '<span class="tag warn">envoi suivi seulement</span>' : ''}</div></div>
-        <div class="tot"><b>${euro(o.total)}</b><span>${euro(o.items)} + port ${euro(o.ship)}</span></div>
+          <div class="tags"><span class="tag">${TP(`${o.n} carte${o.n > 1 ? 's' : ''}`, '{n} carte(s)', { n: o.n })}</span><span class="tag ok">${esc(o.shipName)} ${euro(o.ship)}</span>${o.tracked ? '<span class="tag warn">envoi suivi seulement</span>' : ''}${o.duty > 0.004 ? `<span class="tag warn" title="${esc(T('Vendeur hors de ta zone douanière : TVA à l\'import + droit de douane / frais de dédouanement (estimation)'))}">${esc(TF('douane ≈ {a}', { a: euro(o.duty) }))}</span>` : ''}</div></div>
+        <div class="tot"><b>${euro(o.total)}</b><span>${euro(o.items)} + port ${euro(o.ship)}${o.duty > 0.004 ? ` + ${esc(T('douane'))} ${euro(o.duty)}` : ''}</span></div>
         <button class="btn ghost sm" data-cart="${esc(o.seller)}" title="Ajouter seulement cette commande au panier Cardmarket">🛒 Ajouter</button>
       </div>
       <div class="ob"><table class="t fixed"><colgroup><col style="width:52%"><col style="width:20%"><col style="width:14%"><col style="width:14%"></colgroup>
@@ -881,18 +1039,23 @@ function renderBest() {
         <td><a href="${esc(sellerUrl(t.seller, game))}" target="_blank">${esc(t.seller)}</a>${t.tracked ? ' <span class="tag warn">suivi</span>' : ''}</td>
         <td class="r"><b>${t.covered}</b>/${nAvail}</td>
         <td class="r">${euro(t.items)}</td>
-        <td class="r">${euro(t.ship)} <span class="muted">${esc(t.shipName)}</span></td>
+        <td class="r">${euro(t.ship)} <span class="muted">${esc(t.shipName)}</span>${t.duty > 0.004 ? `<br><span class="muted">+ ${esc(T('douane'))} ${euro(t.duty)}</span>` : ''}</td>
         <td class="r"><b>${euro(t.total)}</b></td>
         <td class="r">${euro(t.total / t.n)}</td></tr>`).join('')}
     </table></div>`;
 
-  const side = r.unavailable.length ? `<aside class="unavail"><h3>🚫 ${esc(T('Introuvable avec tes filtres'))} <span>${r.unavailable.length}</span></h3>
+  const sideUnavail = r.unavailable.length ? `<aside class="unavail"><h3>🚫 ${esc(T('Introuvable avec tes filtres'))} <span>${r.unavailable.length}</span></h3>
     <p class="muted">${esc(T('(pays des vendeurs, langue, état…)'))}</p>
     <ul>${r.unavailable.map((l) => `<li><a href="${esc(ORIGIN + l.url)}" target="_blank">${esc(l.name)}</a></li>`).join('')}</ul></aside>` : '';
+  const sideCart = lastCartFailed.length ? `<aside class="unavail cartfail"><h3>🛒 ${esc(T('Pas ajoutés au panier'))} <span>${lastCartFailed.length}</span></h3>
+    <p class="muted">${esc(T('(souvent : déjà vendus entre-temps, re-scanne ces cartes puis réessaie)'))}</p>
+    <button class="btn sm warnbtn" data-rescanfailed>${esc(T('🔁 Re-scanner ces cartes'))}</button>
+    <ul>${lastCartFailed.map((f) => `<li><a href="${esc(ORIGIN + f.url)}" target="_blank">${esc(f.name)}</a>${f.take > 1 ? ` ×${f.take}` : ''}<div class="muted">${esc(f.seller)} · ${esc(f.reason)}</div></li>`).join('')}</ul></aside>` : '';
+  const side = sideUnavail || sideCart ? `<div class="sidecol">${sideUnavail}${sideCart}</div>` : '';
   $('best').innerHTML = `<div class="bestMain">${h}</div>${side}`;
   $('best').classList.toggle('withSide', !!side);
   const scope = !settings.sellerCountries.length ? 'vendeurs de tous les pays' : settings.sellerCountries.length === 1 ? 'vendeurs : ' + countryName(settings.sellerCountries[0]) : settings.sellerCountries.length + ' pays de vendeurs';
-  $('bestSub').textContent = `${n} carte${n > 1 ? 's' : ''} · ${scope} · livré en ${countryName(settings.myCountry)} · frais de port officiels Cardmarket${settings.alwaysTracked ? ' · toujours en suivi' : ''}`;
+  $('bestSub').textContent = `${n} carte${n > 1 ? 's' : ''} · ${scope} · livré en ${countryName(settings.myCountry)} · frais de port officiels Cardmarket${settings.alwaysTracked ? ' · toujours en suivi' : ''}${settings.customs ? ' · ' + T('douane comptée (estimation)') : ''}`;
 }
 
 // ---------- Vue : Réglages ----------
@@ -925,6 +1088,13 @@ function renderSettings() {
 }
 
 // ---------- UI générale ----------
+// Redessiner toute la liste coûte cher quand il y a beaucoup de cartes (≈ 0,5 s pour 1000) :
+// pendant un scan on le fait au plus toutes les 3 s au lieu d'à chaque carte, sinon ça ralentit le scan.
+let renderTimer = null;
+function renderSoon() {
+  if (renderTimer) return;
+  renderTimer = setTimeout(() => { renderTimer = null; renderCounts(); renderScanned(); }, 3000);
+}
 function renderCounts() {
   $('nScanned').textContent = Object.keys(list).length;
 }
@@ -1015,6 +1185,10 @@ function bulkScan(its) {
 }
 $('scanSel').addEventListener('click', () => bulkScan(items().filter((it) => it.checked)));
 $('scanAll').addEventListener('click', () => bulkScan(items()));
+// re-scan forcé des cartes refusées par le panier (même si elles ont été scannées il y a peu : les offres ont changé)
+const rescanCartFailed = () => { const ids = cartFailedIds(); if (ids.length) startScan(ids); };
+$('scanFailed').addEventListener('click', rescanCartFailed);
+document.addEventListener('click', (e) => { if (e.target.closest('[data-rescanfailed]')) { switchView('scanned'); rescanCartFailed(); } });
 $('stopBtn').addEventListener('click', () => { job.queue = []; job.active = false; renderProgress(); $('progText').textContent = 'Arrêt…'; });
 $('clearAll').addEventListener('click', () => {
   if (!confirm('Effacer toutes les cartes et leurs scans ?')) return;
@@ -1026,7 +1200,7 @@ $('clearAll').addEventListener('click', () => {
 $('scanRows').addEventListener('change', (e) => {
   const row = e.target.closest('.row'); if (!row) return;
   const it = list[row.dataset.id];
-  if (e.target.matches('[data-chk]')) it.checked = e.target.checked;
+  if (e.target.matches('[data-chk]')) { it.checked = e.target.checked; e.target.closest('.row')?.classList.toggle('off', !it.checked); }
   if (e.target.matches('[data-qty]')) it.qty = Math.max(1, Math.min(99, parseInt(e.target.value, 10) || 1));
   if (e.target.matches('[data-cond]')) it.cond = e.target.value;
   if (e.target.matches('[data-cat]')) {
@@ -1121,7 +1295,7 @@ chrome.storage.onChanged.addListener((ch) => {
       changed = true;
     }
   }
-  if (changed) renderAll();
+  if (changed) { if (job.active) renderSoon(); else renderAll(); } // pendant un scan : la liste est redessinée au plus toutes les 3 s
 });
 window.addEventListener('beforeunload', () => { if (job.workerTab != null) chrome.tabs.remove(job.workerTab).catch(() => {}); });
 
@@ -1149,7 +1323,8 @@ async function renderShipping() {
   if (!$('shipFrom').options.length) { $('shipFrom').innerHTML = opts(+settings.myCountry); $('shipTo').innerHTML = opts(+settings.myCountry); }
   const from = +$('shipFrom').value, to = +$('shipTo').value;
   $('shipTable').innerHTML = '<div class="muted">Chargement…</div>';
-  $('shipTable').innerHTML = shipMethodsTable(await loadShipTable(from, to));
+  const tbl = await loadShipTable(from, to);
+  $('shipTable').innerHTML = shipMethodsTable(tbl) + customsExplain(from, to, tbl);
   const me = +settings.myCountry;
   $('toMeTitle').textContent = `Tous les pays → ${countryName(me)}`;
   $('fromMeTitle').textContent = `${countryName(me)} → tous les pays`;
@@ -1290,3 +1465,6 @@ $('cpStop').addEventListener('click', () => $('stopBtn').click());
 $('clearReqLog').addEventListener('click', () => { reqLog = []; chrome.storage.local.set({ cmReqLog: [] }); $('nReqLog').textContent = 0; });
 
 loadAll().then(() => { applyTheme(); startI18n(); renderAll(); decorateBg(); });
+
+// numéro de version affiché sous le logo (BETA tant que la version n'est pas validée)
+try { const m = (globalThis.browser || globalThis.chrome).runtime.getManifest(); const vt = document.getElementById('verTag'); if (vt) vt.textContent = 'v' + m.version + (BETA ? ' BETA' : ''); } catch (e) {}

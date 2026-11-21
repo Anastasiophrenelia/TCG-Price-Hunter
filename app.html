@@ -46,10 +46,12 @@
       <div class="sbt"><b id="progTitle">Scan en cours</b><span id="progCount"></span></div>
       <div class="bar"><div id="barFill"></div></div>
       <div id="progText"></div>
+      <div class="eta rate" id="progRate"></div>
       <div class="eta" id="progEta"></div>
       <div id="progList"></div>
       <button id="stopBtn" class="btn danger sm">⏹ Arrêter le scan</button>
     </div>
+    <div class="verfoot" id="verTag"></div>
     <div class="foot"><a id="kofiLink" class="don" href="https://ko-fi.com/anastasiophrenelia" target="_blank" rel="noopener" title="Soutenir TCG Price Hunter"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3 8h14v5a6 6 0 0 1-6 6H9a6 6 0 0 1-6-6V8Zm14 1h1.5a3 3 0 0 1 0 6H17v-2h1.5a1 1 0 0 0 0-2H17V9Z"/><path fill="#e8467c" d="M10 16.2l-.6-.55C7.6 14 6.6 13.1 6.6 12c0-.85.67-1.5 1.5-1.5.48 0 .94.22 1.24.58l.66.72.66-.72c.3-.36.76-.58 1.24-.58.83 0 1.5.65 1.5 1.5 0 1.1-1 2-2.8 3.65L10 16.2Z"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M7 2.5c.7.8.7 1.7 0 2.5M10.5 2.5c.7.8.7 1.7 0 2.5M14 2.5c.7.8.7 1.7 0 2.5"/></svg> Offre-moi un café ❤</a><div class="links"><a id="ghLink" class="gh git" href="https://github.com/Anastasiophrenelia/TCG-Price-Hunter" target="_blank" rel="noopener" title="Voir le projet sur GitHub"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M8 7l-5 5 5 5M16 7l5 5-5 5M13.5 4.5l-3 15"/></svg> GitHub</a><a id="dcLink" class="gh dc" href="https://discord.gg/Vm8vfqznh2" target="_blank" rel="noopener" title="Rejoindre le Discord"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M20.32 4.37A19.8 19.8 0 0 0 15.4 2.9a13.6 13.6 0 0 0-.63 1.3 18.4 18.4 0 0 0-5.53 0 13 13 0 0 0-.64-1.3 19.7 19.7 0 0 0-4.92 1.48C.56 9.06-.28 13.62.14 18.12a19.9 19.9 0 0 0 6.04 3.05c.49-.66.92-1.36 1.29-2.1a12.9 12.9 0 0 1-2.03-.97l.5-.39a14.2 14.2 0 0 0 12.12 0l.5.39c-.65.38-1.33.71-2.04.97.37.74.8 1.44 1.29 2.1a19.8 19.8 0 0 0 6.04-3.05c.5-5.22-.84-9.74-3.53-13.75ZM8.02 15.33c-1.18 0-2.15-1.09-2.15-2.42 0-1.33.95-2.42 2.15-2.42 1.21 0 2.17 1.1 2.15 2.42 0 1.33-.95 2.42-2.15 2.42Zm7.96 0c-1.18 0-2.15-1.09-2.15-2.42 0-1.33.95-2.42 2.15-2.42 1.21 0 2.17 1.1 2.15 2.42 0 1.33-.94 2.42-2.15 2.42Z"/></svg> Discord</a></div></div>
   </nav>
 
@@ -80,6 +82,7 @@
         <span class="spacer"></span>
         <button class="btn primary sm" id="scanSel">🔍 Scanner la sélection</button>
         <button class="btn ghost sm" id="scanAll">Tout scanner</button>
+        <button class="btn sm warnbtn" id="scanFailed" hidden>🔁 Re-scanner les pas ajoutées au panier</button>
         <span class="muted small" id="scanEstimate"></span>
       </div>
       <div class="filterbar">
@@ -149,6 +152,7 @@
           <h3 style="margin-top:18px">📦 Frais de port</h3>
           <div class="note" id="letterInfo"></div>
           <label class="check"><input type="checkbox" data-s="alwaysTracked"> Toujours en envoi suivi <i class="muted">(sinon : le moins cher, et suivi seulement quand c'est obligatoire)</i></label>
+          <label class="check"><input type="checkbox" data-s="customs"> Compter la douane et la TVA à l'import <i class="muted">(vendeurs hors de ta zone douanière, ex. Royaume-Uni ↔ UE : TVA de ton pays + droit de 3 € par colis jusqu'à 150 €, sinon ~10 € de dédouanement — estimation)</i></label>
           <a class="help" href="https://help.cardmarket.com/fr/ShippingCosts" target="_blank">Voir les frais de port sur l'aide Cardmarket</a>
           <details class="manual">
             <summary>Tarifs manuels (seulement si les tarifs officiels ne se chargent pas)</summary>
@@ -164,14 +168,10 @@
         </div>
         <div class="panel">
           <h3>🔍 Scan</h3>
-          <label class="field"><span>Cartes scannées en même temps <i>sans ouvrir d'onglets, marche aussi en plein écran</i></span>
-            <select data-s="concurrency"><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></label>
-          <label class="field"><span>Offres max chargées par carte <i>50 = 1 seule requête : Cardmarket filtre déjà langue, état et pays, et trie par prix</i></span>
-            <select data-s="maxOffers"><option value="50">50 (1 requête)</option><option value="100">100 (2 requêtes)</option><option value="200">200 (4 requêtes)</option><option value="400">400 (8 requêtes)</option></select></label>
           <label class="field"><span>Ne pas re-scanner une carte scannée il y a moins de <i>avec les mêmes filtres · ↻ sur une carte force le scan</i></span>
             <select data-s="freshHours"><option value="0">jamais (toujours re-scanner)</option><option value="1">1 h</option><option value="6">6 h</option><option value="24">24 h</option><option value="72">3 jours</option></select></label>
           <div class="field"><span>📋 Journal des requêtes <i>chaque requête envoyée à Cardmarket : heure, type, réponse, blocages</i></span><span><b id="nReqLog">0</b> <button class="btn ghost sm" id="exportReqLog">⬇ Exporter</button> <button class="btn ghost sm" id="clearReqLog">Vider</button></span></div>
-          <div class="note">⚠ Cardmarket peut bloquer ton IP s'il reçoit trop de requêtes (la limite n'est pas publique). Si ça arrive, le scan se met en pause tout seul (1, 2, 4 puis 8 min) et reprend. Les requêtes partent à 1 toutes les 1,2 secondes (50 cartes par minute) et ralentissent toutes seules si Cardmarket freine. Le scan commence par 1 carte pour vérifier que tu es connecté. Si Cardmarket bloque pour trop de requêtes (erreur 1015), le scan fait une pause de 10 min puis reprend.</div>
+          <div class="note">⚠ Cardmarket peut bloquer ton IP s'il reçoit trop de requêtes (la limite n'est pas publique). Dès qu'une carte est scannée, la suivante part (3 à la fois), sans pause, avec un maximum de 280 cartes par minute. Le scan commence par 1 carte pour vérifier que tu es connecté. Si Cardmarket bloque (erreur 1015), le scan s'arrête : les cartes déjà scannées sont gardées, relance le reste plus tard.</div>
 
           <h3 style="margin-top:18px">🌐 Par défaut pour les cartes</h3>
           <div class="field col"><span>Langues voulues <i>aucune cochée = toutes</i></span><div id="defLangs" class="chips"></div></div>

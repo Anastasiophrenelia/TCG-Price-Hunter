@@ -57,12 +57,21 @@
     return { cost: k * S.parcelPrice, name: k > 1 ? `${k} colis suivis` : 'Colis suivi' };
   }
 
+  // douane / TVA à l'import (estimation) quand le vendeur est hors de ta zone douanière
+  // rule = { rate, limit, flat, over } : TVA sur (cartes + port) + droit fixe si ≤ limit, sinon frais de dédouanement
+  function customs(value, ship, rule) {
+    if (!rule || value <= 0) return 0;
+    const base = value + ship;
+    return Math.round((base * rule.rate + (base <= rule.limit ? rule.flat : rule.over)) * 100) / 100;
+  }
+
   const maxLetterCards = (S) => Math.max(0, Math.floor((S.letterMaxW - S.packW) / S.cardW));
 
   // lines: [{id, name, qty, offers:[{seller,price,qty,cond,lang,country,tracked}]}]
   function buildProblem(lines, S) {
     const sellerTracked = new Map();
     const sellerTable = new Map(); // vendeur -> tarifs officiels de son pays vers le tien (ou null)
+    const sellerCustoms = new Map(); // vendeur -> règle de douane (ou null si même zone douanière)
     const L = lines.map((line) => {
       const offers = (line.offers || []).filter((o) => o.price != null);
       const bySeller = new Map();
@@ -72,6 +81,7 @@
         bySeller.get(k).push(o);
         if (o.tracked) sellerTracked.set(k, true);
         if (!sellerTable.has(k)) sellerTable.set(k, S.shipTableFor ? S.shipTableFor(o.country) : null);
+        if (!sellerCustoms.has(k)) sellerCustoms.set(k, S.customsFor ? S.customsFor(o.country) : null);
       }
       const options = [];
       for (const [seller, list] of bySeller) {
@@ -92,7 +102,7 @@
         : options.slice().sort((a, b) => b.units - a.units || a.cost - b.cost)[0] || null;
       return { ...line, options: full, fallback, nOffers: offers.length };
     });
-    return { L, sellerTracked, sellerTable };
+    return { L, sellerTracked, sellerTable, sellerCustoms };
   }
 
   function makeState(P, S) {
@@ -102,9 +112,12 @@
       a.n += sign * units; a.value += sign * cost;
       if (a.n <= 0) agg.delete(seller); else agg.set(seller, a);
     };
-    const ship = (seller, n, value) => shipping(n, value, !!P.sellerTracked.get(seller), S, P.sellerTable.get(seller)).cost;
+    const shipOnly = (seller, n, value) => shipping(n, value, !!P.sellerTracked.get(seller), S, P.sellerTable.get(seller)).cost;
+    // coût d'une commande en plus des cartes = port + douane éventuelle
+    const ship = (seller, n, value) => { const c = shipOnly(seller, n, value); return c + customs(value, c, P.sellerCustoms.get(seller)); };
     const shipOf = (seller) => { const a = agg.get(seller); return a ? ship(seller, a.n, a.value) : 0; };
-    return { agg, add, ship, shipOf };
+    const split = (seller) => { const a = agg.get(seller); if (!a) return { ship: 0, duty: 0 }; const c = shipOnly(seller, a.n, a.value); return { ship: c, duty: customs(a.value, c, P.sellerCustoms.get(seller)) }; };
+    return { agg, add, ship, shipOf, split };
   }
 
   function evaluate(P, assign, S) {
@@ -116,9 +129,9 @@
       items += o.cost;
       st.add(o.seller, o.units, o.cost, 1);
     });
-    let ship = 0;
-    for (const s of st.agg.keys()) ship += st.shipOf(s);
-    return { items, ship, total: items + ship };
+    let ship = 0, duty = 0;
+    for (const s of st.agg.keys()) { const x = st.split(s); ship += x.ship; duty += x.duty; }
+    return { items, ship, duty, total: items + ship + duty };
   }
 
   // Recherche locale : déplacer une carte chez un autre vendeur, ou fermer une commande entière
@@ -217,7 +230,8 @@
     const orderList = [...orders.values()].map((o) => {
       const tracked = !!P.sellerTracked.get(o.seller);
       const sh = shipping(o.n, o.items, tracked, S, P.sellerTable.get(o.seller));
-      return { ...o, tracked, ship: sh.cost, shipName: sh.name, total: o.items + sh.cost };
+      const duty = customs(o.items, sh.cost, P.sellerCustoms.get(o.seller));
+      return { ...o, tracked, ship: sh.cost, shipName: sh.name, duty, total: o.items + sh.cost + duty };
     }).sort((a, b) => b.lines.length - a.lines.length || a.total - b.total);
 
     // Top vendeurs (une seule commande chez eux pour ce qu'ils ont)
@@ -225,7 +239,7 @@
 
     return {
       settings: S,
-      total: best.ev.total, items: best.ev.items, ship: best.ev.ship,
+      total: best.ev.total, items: best.ev.items, ship: best.ev.ship, duty: best.ev.duty,
       orders: orderList,
       naive,
       single: top.find((t) => t.covered === P.L.filter((l) => l.options.length).length && t.covered > 0) || null,
@@ -245,11 +259,12 @@
     }));
     return [...map.values()].map((t) => {
       const sh = shipping(t.n, t.items, !!P.sellerTracked.get(t.seller), S, P.sellerTable.get(t.seller));
-      return { ...t, ship: sh.cost, shipName: sh.name, total: t.items + sh.cost, tracked: !!P.sellerTracked.get(t.seller) };
+      const duty = customs(t.items, sh.cost, P.sellerCustoms.get(t.seller));
+      return { ...t, ship: sh.cost, shipName: sh.name, duty, total: t.items + sh.cost + duty, tracked: !!P.sellerTracked.get(t.seller) };
     }).sort((a, b) => b.covered - a.covered || a.total - b.total).slice(0, 30);
   }
 
-  const api = { DEFAULTS, shipping, optimize, maxLetterCards, weightFor };
+  const api = { DEFAULTS, shipping, customs, optimize, maxLetterCards, weightFor };
   if (typeof module !== 'undefined') module.exports = api;
   else root.Optimizer = api;
 })(typeof window !== 'undefined' ? window : globalThis);

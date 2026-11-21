@@ -364,7 +364,7 @@ html[data-theme=dark] #scanRows { background: rgba(16,30,68,.66); -webkit-backdr
 html[data-theme=dark] #scanRows .row { padding: 12px 26px; background: transparent; border: 0; border-bottom: 1px solid rgba(140,175,255,.09); }
 html[data-theme=dark] #scanRows .row:nth-child(even) { background: rgba(255,255,255,.035); }
 html[data-theme=dark] #scanRows .row:hover { background: rgba(91,155,255,.13); }
-html[data-theme=dark] #scanRows .row, html[data-theme=dark] #scanHead { grid-template-columns: 22px 46px 1fr 64px 76px 84px 84px 118px; gap: 14px; }
+html[data-theme=dark] #scanRows .row, html[data-theme=dark] #scanHead { grid-template-columns: 22px 46px 1fr 64px 76px 84px 84px 150px; gap: 14px; }
 html[data-theme=dark] .row .nm { color: #9cc3ff; }
 html[data-theme=dark] .num b { color: #fff; font-weight: 700; }
 html[data-theme=dark] #scanRows .row > .num:nth-child(6) b { color: #7ff0c0; background: none; border: 0; padding: 0; }
@@ -507,3 +507,49 @@ html[data-theme=dark] .foot { flex-direction: column; align-items: stretch; gap:
 .foot .don:hover { transform: translateY(-1px); box-shadow: 0 10px 22px -6px rgba(232,70,124,.75); color: #fff; text-decoration: none; }
 .foot .don svg { flex: none; }
 .foot .gh.git:hover { background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.35); }
+
+.logo .vertag { display: block; margin-top: 2px; font-family: "JetBrains Mono", monospace; font-size: 9.5px; font-weight: 700; letter-spacing: .04em; color: #fbbf24; }
+
+/* colonnes chiffrées de la liste : titres et valeurs centrés les uns sous les autres */
+#scanHead > .num, #scanRows .row > .num { text-align: center; }
+#scanHead > .num { text-indent: .06em; } /* compense l'espacement des lettres du titre */
+#scanRows .row > .num:last-child { white-space: nowrap; }
+
+/* barre de couleur à gauche = la série de la carte (même couleur = même série) */
+#scanRows .row.ser { position: relative; }
+#scanRows .row.ser::before { content: ''; position: absolute; left: 0; top: 0; bottom: -1px; width: 3px; background: var(--ser); }
+#scanRows .row.ser::after { content: ''; position: absolute; left: 3px; top: 0; bottom: 0; width: 90px; pointer-events: none; background: linear-gradient(90deg, color-mix(in srgb, var(--ser) 6%, transparent), transparent); }
+
+/* carte décochée : presque grise (elle ne sera ni scannée ni comptée dans le panier) */
+#scanRows .row.off { filter: grayscale(1); opacity: .4; transition: opacity .15s, filter .15s; }
+#scanRows .row.off:hover { opacity: .7; }
+#scanRows .row.off input[data-chk] { filter: none; }
+
+/* version de l'extension, en bas du menu, juste au-dessus du trait */
+.verfoot { display: none; }
+html[data-theme=dark] .verfoot { display: block; margin: auto 14px 8px; text-align: center; font-family: "JetBrains Mono", monospace; font-size: 11px; font-weight: 700; letter-spacing: .05em; color: #fbbf24; opacity: .85; }
+html[data-theme=dark] .verfoot + .foot { margin-top: 0; }
+
+/* colonne de droite du meilleur panier : « Introuvable » + « Pas ajoutés au panier » */
+.sidecol { position: sticky; top: 20px; align-self: start; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.sidecol .unavail { position: static !important; }
+.sidecol .unavail ul { max-height: 38vh; }
+.unavail.cartfail { border-color: #f59e0b !important; }
+.unavail.cartfail h3 { color: #fbbf24 !important; }
+.unavail.cartfail h3 span { background: #f59e0b !important; color: #1a1205 !important; }
+.unavail.cartfail li .muted { font-size: 11.5px; margin-top: 2px; }
+@media (max-width: 1200px) { .sidecol { position: static; } }
+
+/* bouton « Re-scanner les pas ajoutées au panier » (orange, comme le cadre des refus) */
+.btn.warnbtn { background: rgba(245,158,11,.14); color: #fbbf24; border: 1px solid rgba(245,158,11,.55); }
+.btn.warnbtn:hover { background: rgba(245,158,11,.24); color: #fde68a; }
+.btn.warnbtn[hidden] { display: none !important; }
+.unavail.cartfail .warnbtn { width: 100%; margin: 2px 0 8px; justify-content: center; }
+
+/* explication de la douane (vue Frais de port) */
+.customs { margin-top: 14px; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(245,158,11,.45); background: rgba(245,158,11,.07); }
+.customs.ok { border-color: rgba(52,211,153,.4); background: rgba(16,185,129,.07); }
+.customs h4 { margin: 0 0 6px; font-size: 15px; color: #fbbf24; }
+.customs p { margin: 6px 0; line-height: 1.5; }
+.customs .warn { color: #fbbf24; font-weight: 600; }
+.customs table { margin: 8px 0; }
