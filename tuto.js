@@ -85,6 +85,7 @@ function tutoEls() {
     root.addEventListener('click', async (e) => {
       const cp = e.target.closest('[data-ttcopy]');
       if (cp) { try { await navigator.clipboard.writeText(cp.dataset.ttcopy); cp.textContent = '✔ ' + T('Copié'); } catch {} return; }
+      if (e.target.closest('[data-ttskip]')) return tutoSkip();
       if (e.target.closest('[data-ttrestore]')) return tutoRestore();
       if (e.target.closest('[data-tt="next"]')) tutoNext();
     });
@@ -114,6 +115,7 @@ function showTuto(step = 0, dir = 1) {
   const link = typeof s.link === 'function' ? s.link() : s.link;
   const bubble = root.querySelector('.tt-bubble');
   bubble.innerHTML = `
+    <button class="tt-x" data-ttskip title="${esc(T('Passer le tuto'))}" aria-label="${esc(T('Passer le tuto'))}">✕</button>
     ${s.wait ? `<div class="tt-where">⏳ ${esc(T('En cours'))}</div>` : el && s.click ? `<div class="tt-where">👆 ${esc(T('Clique ici'))}</div>` : el ? '' : `<div class="tt-ico">${s.icon || '💡'}</div>`}
     <h3>${esc(T(s.title))}</h3>
     <p>${esc(T(s.text))}</p>
@@ -219,6 +221,13 @@ function tutoRestore() {
   list = snap.list; cats = snap.cats; viewCat = '';
   saveList(); saveCats(); renderAll();
   tutoMark.restored = true;
+}
+
+// ✕ : on quitte tout le tuto ; s'il a ajouté des cartes de test, la liste revient comme avant
+function tutoSkip() {
+  const snap = tutoMark.snap;
+  if (snap && JSON.stringify(snap.list) !== JSON.stringify(list)) tutoRestore();
+  closeTuto();
 }
 
 function closeTuto() {

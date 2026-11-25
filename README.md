@@ -13,7 +13,7 @@
 <p align="center">
   <a href="https://discord.gg/Vm8vfqznh2"><img src="https://img.shields.io/badge/Discord-join-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord"></a>
   <a href="https://ko-fi.com/anastasiophrenelia"><img src="https://img.shields.io/badge/Ko--fi-support%20the%20project-FF5E5B?style=flat-square&logo=kofi&logoColor=white" alt="Ko-fi"></a>
-  <img src="https://img.shields.io/badge/version-1.2-1b63e0?style=flat-square" alt="Version 1.2">
+  <img src="https://img.shields.io/badge/version-1.31-1b63e0?style=flat-square" alt="Version 1.31">
   <img src="https://img.shields.io/badge/license-all%20rights%20reserved-555?style=flat-square" alt="License">
 </p>
 
@@ -29,18 +29,18 @@
 
 ## ✨ What it does
 
-- **Add your cards** from their Cardmarket page (the "TCG Price Hunter" bar under the title).
-- **Scans the offers** for each card: price, condition, language, seller country, rating, number of sales.
-- **Finds the best basket**: the cheapest combination of sellers using Cardmarket's real shipping rates (letter, tracked letter, parcel), for every country.
-- **Customs & import VAT included** (estimate) when a seller is outside your customs area (e.g. United Kingdom ↔ EU), so the best basket stays the real cheapest one.
-- **Fills your Cardmarket cart** in one click and lists what Cardmarket refused, with a button to rescan those cards. Nothing is bought, and shipping methods are not selected: you choose them and pay yourself.
-- Filters by **language**, **minimum condition**, **seller countries**, **rating** and **number of sales**; blocked sellers, ignored offers, categories.
-- **Fast and careful**: 3 scan modes (Fast, Medium, Long), 3 cards at a time, filtered Cardmarket pages instead of "Show more results"; captchas pause the scan and it resumes on its own.
-- **Deck import** from Piltover Archive and Riftdecks, and a **comparison with Cardmarket's Shopping Wizard**.
-- Interface in **English, French, German, Spanish, Italian, Portuguese, Dutch and Polish**.
-- **Export / import** your cards and settings.
+1. **Add your cards**: click "➕ Add" on any Cardmarket card page, or import a whole deck from Piltover Archive or Riftdecks (up to 5 decks at once, one category each).
+2. **Choose what you accept**: card language, minimum condition, your delivery country and which sellers to keep (by country, rating, number of sales). By default, only countries with no customs fees to you.
+3. **Scan**: the extension reads the offers of every card on Cardmarket. ⚡ Fast for a quick look, 🎯 Medium for everyday use, 🔍 Long to see the most sellers right before buying.
+4. **Get the best basket**: it works out the cheapest combination of sellers with Cardmarket's real shipping rates (letter, tracked letter, parcel) and customs/import VAT when needed, and can split a card across several sellers when that's cheaper.
+5. **Check you're saving**: compare your basket with Cardmarket's own Shopping Wizard in one click.
+6. **Fill your cart**: everything goes into your Cardmarket cart in one click. Nothing is bought for you: you check, choose the shipping methods and pay on Cardmarket.
+
+Also: interface in **8 languages** (English, French, German, Spanish, Italian, Portuguese, Dutch, Polish), categories, export / import of your cards and settings, an interactive tutorial on first launch, and an activity log for bug reports.
 
 Works with every card sold on Cardmarket: Riftbound, Pokémon, Magic, One Piece, Lorcana, Yu-Gi-Oh!, Dragon Ball…
+
+> ⚠️ Only add to your cart what you really plan to buy. Adding and removing cards over and over, or leaving them in the cart to hold them, can get your Cardmarket account banned.
 
 ## 🆕 What's new in 1.3
 
@@ -51,28 +51,8 @@ Works with every card sold on Cardmarket: Riftbound, Pokémon, Magic, One Piece,
 - **Minimum condition for all cards** with coloured badges (EX also accepts NM and MT), a select-all checkbox, a "Delete selection" button, and categories removed automatically once emptied.
 - **Loading screen** while the basket is calculated, and **click a card image** to zoom in.
 - **Activity log** in Settings (each line kept 7 days) to attach to a bug report on Discord.
-- **Interactive tutorial** on first launch (replay it from Settings).
+- **Interactive tutorial** on first launch (replay it from Settings). *1.31: a ✕ to skip the whole tutorial.*
 - Default sellers: countries with **no customs fees** to you.
-
-### 1.2
-
-- **🇪🇺 Europe (low fees)**: keeps only the European countries whose shipping + customs to you stay low (€3.50 maximum on average), based on Cardmarket's official rates for *your* country. It's the default choice.
-- **Countries sorted by fees**: in Settings, each country shows what an order from there costs you (shipping + customs), from cheapest to most expensive.
-- **Filters applied before searching**: seller countries (all at once), reputation, language and condition are sent straight to Cardmarket, so every offer received is useful.
-- **Your country found automatically**: the delivery country is guessed from your time zone and browser language, and you can change it anytime. It no longer depends on the extension's language.
-- **What's new window**: click the version number at the bottom of the sidebar.
-- **Fixes**: shipping for large orders could be wrong after a few days; remaining texts translated in every language.
-
-### 1.1
-
-- Much faster scans (3 cards at a time, live cards-per-minute average, even with 1000+ cards in your list).
-- Captchas no longer stop the scan: tick the box, wait a few seconds, it resumes and brings you back to the extension.
-- Add to cart: Cardmarket's answers are now really checked, expired tokens are renewed, and refused articles are listed (with a "rescan" button).
-- Customs and import VAT estimate between customs areas, explained in the Shipping costs tab.
-- Cards grouped by set with a colour bar, unticked cards greyed out, cleaner columns.
-- Offers restricted by the seller ("you can't buy this item") are skipped by the best basket.
-- Seller countries: one-click presets, automatic by default from your delivery country; seller flags in the orders.
-- 3 new interface languages: Portuguese, Dutch and Polish.
 
 ## 📦 Install on Chrome (from GitHub)
 
@@ -85,7 +65,7 @@ Works with every card sold on Cardmarket: Riftbound, Pokémon, Magic, One Piece,
 
 ## 🔒 Privacy
 
-The extension collects nothing and sends nothing to anyone. Your cards and settings stay in your browser. It only talks to Cardmarket (card pages, cart, public shipping rates), just like when you browse yourself.
+The extension collects nothing and sends nothing to anyone. Your cards and settings stay in your browser. It only talks to Cardmarket (card pages, cart, wants list, public shipping rates), just like when you browse yourself — and to Piltover Archive or Riftdecks only when you import a deck from them.
 
 ## ⚖️ License
 

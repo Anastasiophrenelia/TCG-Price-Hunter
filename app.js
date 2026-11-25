@@ -2165,7 +2165,7 @@ function showWhatsNew() {
   if (settings.seenVersion !== appVersion) { settings.seenVersion = appVersion; saveSettings(); }
   $('verTag').classList.remove('new');
 }
-const BUILD = 'b2511-0010'; // numéro de version interne : visible dans les erreurs, pour savoir quelle copie tourne
+const BUILD = 'b2611-0040'; // numéro de version interne : visible dans les erreurs, pour savoir quelle copie tourne
 try {
   const m = (globalThis.browser || globalThis.chrome).runtime.getManifest();
   appVersion = m.version;
