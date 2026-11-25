@@ -1,0 +1,352 @@
+// ---------- Import de deck (Riftbound : Piltover Archive, Riftdecks) ----------
+// chargé après app.js : utilise ses fonctions (request, job, list, cats, T, TF, esc, euro…)
+'use strict';
+
+const DECK_SITES = {
+  Riftbound: [
+    { name: 'Piltover Archive', host: 'piltoverarchive.com', url: 'https://piltoverarchive.com/decks', ex: 'https://piltoverarchive.com/decks/view/…' },
+    { name: 'Riftdecks', host: 'riftdecks.com', url: 'https://riftdecks.com/riftbound-decks', ex: 'https://riftdecks.com/riftbound-metagame/…' },
+  ],
+};
+const DISCORD_URL = 'https://discord.gg/Vm8vfqznh2';
+let deckState = { game: 'Riftbound', mode: 'same', side: false, url: '' };
+
+const dkNorm = (s) => String(s || '').toLowerCase().replace(/[’‘`´]/g, "'").replace(/[^a-z0-9']+/g, ' ').trim();
+const dkBase = (s) => dkNorm(String(s || '').replace(/\s*\((?:V\.\d+[^)]*)\)\s*$/i, ''));
+const dkKey = (s) => dkBase(s).replace(/[^a-z0-9]/g, '');
+const dkNum = (s) => String(s || '').toLowerCase().replace(/^0+(?=\d)/, '');
+
+// ---- lecture des sites de decks ----
+function jsonObjectAt(s, i) {
+  let d = 0, q = false;
+  for (let j = i; j < s.length; j++) {
+    const ch = s[j];
+    if (q) { if (ch === '\\') j++; else if (ch === '"') q = false; continue; }
+    if (ch === '"') q = true; else if (ch === '{') d++; else if (ch === '}') { d--; if (!d) return s.slice(i, j + 1); }
+  }
+  return '';
+}
+// Piltover Archive (Next.js) : la liste est dans les données « self.__next_f.push » de la page
+function parsePiltover(html, withSide) {
+  const flight = [...html.matchAll(/self\.__next_f\.push\(\[1,"((?:[^"\\]|\\.)*)"\]\)/g)].map((m) => { try { return JSON.parse('"' + m[1] + '"'); } catch { return ''; } }).join('');
+  const k = flight.indexOf('"maindeck":[');
+  if (k < 0) return null;
+  let d = 0, start = -1;
+  for (let j = k; j >= 0; j--) { const ch = flight[j]; if (ch === '}') d++; else if (ch === '{') { if (!d) { start = j; break; } d--; } }
+  let deck;
+  try { deck = JSON.parse(jsonObjectAt(flight, start)); } catch { return null; }
+  const cards = [];
+  const push = (qty, card, variant, section) => {
+    if (!card || !qty) return;
+    const vn = (variant && variant.variantNumber) || '';
+    const m = vn.match(/^([A-Z0-9]+)-(\w+\*?)$/i);
+    cards.push({ qty: +qty, name: card.name, set: m ? m[1].toUpperCase() : '', num: m ? m[2] : '', section });
+  };
+  if (deck.legend) push(1, deck.legend.card, deck.legend, 'legend');
+  for (const sec of ['champions', 'battlefields', 'runes', 'maindeck'].concat(withSide ? ['sideboard'] : [])) {
+    for (const e of deck[sec] || []) {
+      const v = (e.card && e.card.cardVariants || []).find((x) => x.id === e.variantId) || (e.card && e.card.cardVariants || [])[0];
+      push(e.quantity, e.card, v, sec);
+    }
+  }
+  return { name: deck.name || '', cards };
+}
+// Riftdecks : une ligne <tr class="card-list-item" data-quantity data-image-src="/img/cards/riftbound/RAD/rad-141-167_full.png">
+function parseRiftdecks(html, withSide) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const cards = [];
+  for (const tr of doc.querySelectorAll('tr.card-list-item')) {
+    const section = tr.dataset.cardType || '';
+    if (section === 'sideboard' && !withSide) continue;
+    const name = tr.querySelector('a')?.textContent.trim();
+    const m = (tr.dataset.imageSrc || '').match(/\/([A-Z0-9]+)\/[a-z0-9]+-(\w+?)-\d+_/i);
+    if (name) cards.push({ qty: +tr.dataset.quantity || 1, name, set: m ? m[1].toUpperCase() : '', num: m ? m[2] : '', section });
+  }
+  const t = (doc.querySelector('h1')?.textContent || doc.title || '').replace(/\s*\|\s*riftDecks.*$/i, '').trim();
+  return cards.length ? { name: t.replace(/\s+by\s+.*$/i, '').trim() || t, cards } : null;
+}
+
+// ---- recherche Cardmarket (mode liste) ----
+function parseCmSearch(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const out = [];
+  for (const row of doc.querySelectorAll('[id^="productRow"]')) {
+    const a = row.querySelector('a[href*="/Products/Singles/"]');
+    if (!a) continue; // tapis, protège-cartes…
+    const exp = row.querySelector('.expansion-symbol');
+    const tip = row.querySelector('.thumbnail-icon')?.getAttribute('data-bs-title') || '';
+    const img = (tip.match(/src="([^"]+)"/) || [])[1] || '';
+    const price = dkPrice((row.querySelector('.col-price')?.textContent || '').trim());
+    out.push({
+      id: row.id.replace('productRow', ''),
+      url: a.getAttribute('href').split('?')[0],
+      name: a.textContent.trim(),
+      en: (row.querySelector('.fst-italic')?.textContent || a.textContent).trim(),
+      set: (exp?.textContent || '').trim().toUpperCase(),
+      expName: exp?.getAttribute('data-bs-original-title') || exp?.getAttribute('data-bs-title') || exp?.getAttribute('title') || exp?.getAttribute('aria-label') || '',
+      num: (row.querySelector('.col-md-2 span:last-child')?.textContent || '').trim(),
+      avail: parseInt((row.querySelector('.col-availability')?.textContent || '').replace(/\D/g, ''), 10) || 0,
+      price: isFinite(price) ? price : Infinity,
+      img: /^https?:/.test(img) ? img : '',
+    });
+  }
+  return out;
+}
+// un seul résultat : Cardmarket ouvre directement la fiche de la carte
+function parseCmProduct(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const id = doc.querySelector('input[name="idProduct"]')?.value;
+  const url = (doc.querySelector('meta[property="og:url"]')?.getAttribute('content') || doc.querySelector('link[rel=canonical]')?.getAttribute('href') || '').replace(/^https?:\/\/[^/]+/, '').split('?')[0];
+  if (!id || !/\/Products\/Singles\//.test(url)) return null;
+  const info = CMParse.productInfo(doc, url) || {};
+  const dd = [...doc.querySelectorAll('dl dd')].map((x) => x.textContent.trim());
+  const priceTxt = dd[4] && /€/.test(dd[4]) ? dd[4] : dd.find((x) => /€/.test(x)) || '';
+  const parts = (info.sub || '').split(' - ');
+  return {
+    id: String(id), url, name: info.name || '', en: parts.length > 1 ? parts.slice(1).join(' - ') : info.name || '',
+    set: ((doc.title.match(/\(([A-Z0-9]+)\)/) || [])[1] || '').toUpperCase(), expName: dd[2] || parts[0] || '',
+    num: /^\w{0,4}\d{1,3}[a-z*]?$/i.test(dd[1] || '') ? dd[1] : '', avail: parseInt((dd[3] || '').replace(/\D/g, ''), 10) || 0,
+    price: dkPrice(priceTxt), img: info.img || '',
+  };
+}
+function dkPrice(s) { const v = parseEuro(s); return isNaN(v) ? Infinity : v; }
+
+// ---- fenêtre ----
+function deckModal() {
+  let back = $('deckModal');
+  if (!back) {
+    back = document.createElement('div');
+    back.id = 'deckModal'; back.className = 'wn-back';
+    back.addEventListener('click', (e) => { if (e.target === back || e.target.closest('[data-dkclose]')) { if (!job.active || job.kind !== 'deck') back.hidden = true; } });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !back.hidden && job.kind !== 'deck') back.hidden = true; });
+    back.addEventListener('click', onDeckClick);
+    back.addEventListener('change', (e) => {
+      const t = e.target;
+      if (t.name === 'dkmode') deckState.mode = t.value;
+      if (t.id === 'dkSide') deckState.side = t.checked;
+    });
+    back.addEventListener('input', (e) => { if (e.target.id === 'dkUrl') deckState.url = e.target.value; });
+    document.body.appendChild(back);
+  }
+  return back;
+}
+const discordHint = () => `<p class="dk-hint">${esc(T('D\'autres sites à proposer ? Passe sur le Discord et mets un message dans le salon suggestions.'))} <a href="${DISCORD_URL}" target="_blank" rel="noopener">Discord ↗</a></p>`;
+
+function showDeckImport() {
+  const back = deckModal();
+  const games = Object.keys(DECK_SITES);
+  if (!games.includes(deckState.game)) deckState.game = games[0];
+  const sites = DECK_SITES[deckState.game];
+  back.innerHTML = `<div class="wn panel dk" role="dialog" aria-modal="true" aria-labelledby="dkTitle">
+    <button class="wn-x" data-dkclose title="${esc(T('Fermer'))}">✕</button>
+    <h2 id="dkTitle">📥 ${esc(T('Importer un deck'))}</h2>
+    <div class="dk-step"><b>1.</b> ${esc(T('Jeu'))}</div>
+    <div class="chips">${games.map((g) => `<span class="chip big ${g === deckState.game ? 'on' : ''}" data-dkgame="${esc(g)}">${esc(g)}</span>`).join('')}</div>
+    <p class="dk-hint">${esc(T('Seuls les jeux qui ont un site de decks compatible sont affichés.'))}</p>
+    <div class="dk-step"><b>2.</b> ${esc(TF('Colle le lien du deck (jusqu\'à {n}, un par ligne)', { n: MAX_DECKS }))}</div>
+    <div class="dk-sites">${sites.map((s) => `<a href="${esc(s.url)}" target="_blank" rel="noopener" title="${esc(s.ex)}">${esc(s.name)} ↗</a>`).join('')}</div>
+    <textarea id="dkUrl" rows="3" spellcheck="false" placeholder="${esc(sites.map((x) => x.ex).join('\n'))}">${esc(deckState.url)}</textarea>
+    ${discordHint()}
+    <div class="dk-step"><b>3.</b> ${esc(T('Quelles cartes ?'))}</div>
+    <label class="dk-opt"><input type="radio" name="dkmode" value="same" ${deckState.mode === 'same' ? 'checked' : ''}> <span><b>${esc(T('Deck identique'))}</b><i>${esc(T('Exactement les mêmes versions (édition, numéro, illustration).'))}</i></span></label>
+    <label class="dk-opt"><input type="radio" name="dkmode" value="cheap" ${deckState.mode === 'cheap' ? 'checked' : ''}> <span><b>${esc(T('Le moins cher possible'))}</b><i>${esc(T('Pour chaque carte, la version la moins chère qui a le même nom (même effet, autre édition ou illustration).'))}</i></span></label>
+    <label class="dk-opt sw"><input type="checkbox" id="dkSide" ${deckState.side ? 'checked' : ''}> <span>${esc(T('Inclure le sideboard'))}</span></label>
+    <div class="wn-foot"><span class="dk-err" id="dkErr"></span><button class="btn primary" data-dkgo>${esc(T('Importer'))}</button></div>
+  </div>`;
+  back.hidden = false;
+  setTimeout(() => $('dkUrl')?.focus(), 30);
+}
+
+async function onDeckClick(e) {
+  const g = e.target.closest('[data-dkgame]');
+  if (g) { deckState.game = g.dataset.dkgame; return showDeckImport(); }
+  if (e.target.closest('[data-dkgo]')) return startDeckImport();
+  if (e.target.closest('[data-dkback]')) return showDeckImport();
+  if (e.target.closest('[data-dkadd]')) return addDeckToList();
+  if (e.target.closest('[data-dkstop]')) { if (job.kind === 'deck') job.active = false; }
+  const tb = e.target.closest('[data-dktab]');
+  if (tb) { deckTab = +tb.dataset.dktab; showDeckResult(); }
+}
+
+function deckErr(msg) { const el = $('dkErr'); if (el) el.textContent = msg; else banner(msg); }
+
+const MAX_DECKS = 5;
+async function startDeckImport() {
+  if (job.active) return deckErr(T('Un scan ou un ajout est déjà en cours, attends la fin.'));
+  const raw = ($('dkUrl')?.value ?? deckState.url ?? '');
+  const lines = [...new Set(raw.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean))];
+  if (!lines.length) return deckErr(T('Colle le lien complet du deck (il commence par https://).'));
+  if (lines.length > MAX_DECKS) return deckErr(TF('{n} liens maximum à la fois.', { n: MAX_DECKS }));
+  const decks = [];
+  for (const l of lines) {
+    let u;
+    try { u = new URL(l); } catch { return deckErr(T('Colle le lien complet du deck (il commence par https://).') + ' (' + l.slice(0, 60) + ')'); }
+    const site = (DECK_SITES[deckState.game] || []).find((s) => u.hostname === s.host || u.hostname.endsWith('.' + s.host));
+    if (!site) return deckErr(T('Ce site n\'est pas encore compatible.') + ' (' + u.hostname + ')');
+    decks.push({ u, site });
+  }
+  deckState.url = lines.join('\n');
+  logAction(`Import de deck lancé : ${lines.length} lien(s) (${deckState.mode === 'cheap' ? 'le moins cher' : 'identique'}) : ${lines.join(' ')}`);
+  // autorisation de lire les sites (demandée tout de suite, pendant le clic)
+  let ok = true;
+  try { ok = await chrome.permissions.request({ origins: [...new Set(decks.map((d) => `https://${d.site.host}/*`))] }); } catch { ok = true; }
+  if (!ok) return deckErr(TF('Il faut autoriser l\'extension à lire {s} pour importer le deck.', { s: [...new Set(decks.map((d) => d.site.name))].join(', ') }));
+  const back = deckModal();
+  const progress = (txt, done, total) => {
+    back.innerHTML = `<div class="wn panel dk"><h2>📥 ${esc(T('Importer un deck'))}</h2>
+      <p>${esc(txt)}</p>${total ? `<div class="bar"><i style="width:${Math.round(100 * done / total)}%"></i></div><p class="dk-hint">${done} / ${total}</p>` : ''}
+      <div class="wn-foot"><span></span><button class="btn ghost" data-dkstop>${esc(T('Arrêter'))}</button></div></div>`;
+  };
+  // 1) tous les decks en même temps
+  progress(TF('Lecture de {n} deck(s)…', { n: decks.length }));
+  await Promise.all(decks.map(async (d) => {
+    try {
+      const html = await (await fetch(d.u.href, { credentials: 'omit' })).text();
+      d.deck = d.site.host === 'piltoverarchive.com' ? parsePiltover(html, deckState.side) : parseRiftdecks(html, deckState.side);
+    } catch { d.deck = null; }
+  }));
+  const bad = decks.filter((d) => !d.deck || !d.deck.cards.length);
+  if (bad.length === decks.length) { logAction('Import de deck : aucun deck lisible : ' + decks.map((d) => d.u.href).join(' '), 'erreur'); showDeckImport(); return deckErr(TF('Impossible de lire ce deck sur {s}. Vérifie le lien (il doit être public).', { s: bad[0].site.name })); }
+  const good = decks.filter((d) => d.deck && d.deck.cards.length);
+  // on regroupe les mêmes versions dans chaque deck (une carte peut être dans 2 sections)
+  for (const d of good) {
+    const byKey = new Map();
+    for (const c of d.deck.cards) {
+      const key = c.set + '|' + dkNum(c.num) + '|' + dkNorm(c.name);
+      const prev = byKey.get(key);
+      if (prev) prev.qty += c.qty; else byKey.set(key, { ...c });
+    }
+    d.cards = [...byKey.values()];
+  }
+  // 2) une recherche Cardmarket par nom de carte (une seule fois même si plusieurs decks l'ont), 3 à la fois
+  const labels = new Map();
+  for (const d of good) for (const c of d.cards) if (!labels.has(dkNorm(c.name))) labels.set(dkNorm(c.name), c.name);
+  const names = [...labels.keys()];
+  const cmLang = ['fr', 'en', 'de', 'es', 'it'].includes(I18N.getLang()) ? I18N.getLang() : 'en';
+  const gamePath = deckState.game;
+
+  Object.assign(job, { active: true, queue: [], running: new Map(), done: 0, total: names.length, failed: [], pausedUntil: 0, strikes: 0,
+    challenge: null, loggedOut: false, t0: Date.now(), durations: [], nextReq: 0, gap: baseGap(), workerTab: null, workerOpened: 0,
+    lastErr: '', challenges: 0, probe: false, probeBusy: false, stopReason: '', pauseReason: '', kind: 'deck', cont: [] });
+  job.appTab = await chrome.tabs.getCurrent().catch(() => null);
+  const found = {}; // nom normalisé -> lignes Cardmarket
+  let error = '';
+  const parse = (t) => { let c = parseCmSearch(t || ''); if (!c.length) { const one = parseCmProduct(t || ''); if (one) c = [one]; } return c; };
+  const search = async (q) => request(`${ORIGIN}/${cmLang}/${gamePath}/Products/Search?searchString=${encodeURIComponent(q)}&mode=list`);
+  const queue = [...names];
+  const worker = async () => {
+    while (queue.length && job.active && !error) {
+      const n = queue.shift(), label = labels.get(n);
+      progress(TF('Recherche de {c} sur Cardmarket…', { c: label }), job.done, names.length);
+      const res = await search(label);
+      if (res.login) throw new Error(T('tu n\'es pas connecté à Cardmarket'));
+      let cands = parse(res.text);
+      // nom un peu différent sur le site du deck (ex. « Jarvaniv » au lieu de « Jarvan IV ») : on cherche aussi un bout du nom
+      for (const part of label.includes(',') ? [label.split(',').slice(1).join(',').trim(), label.split(',')[0].trim()] : []) {
+        if (cands.some((x) => dkKey(x.en) === dkKey(label) || dkKey(x.name) === dkKey(label))) break;
+        if (part.length < 4) continue;
+        cands = cands.concat(parse((await search(part)).text));
+      }
+      found[n] = cands;
+      job.done++;
+      progress(TF('Recherche de {c} sur Cardmarket…', { c: label }), job.done, names.length);
+    }
+  };
+  try {
+    await Promise.all([worker(), worker(), worker()].map((p) => p.catch((err) => { if (!error) error = err.message === 'stop' ? (job.stopReason || T('import arrêté')) : err.message; })));
+    if (!error && !job.active) error = T('import arrêté');
+  } catch (err) { error = err.message; }
+  job.active = false; job.kind = ''; job.running.clear();
+  if (job.workerTab != null) { chrome.tabs.remove(job.workerTab).catch(() => {}); job.workerTab = null; }
+  backToApp();
+  if (error) { logAction('Import de deck impossible : ' + error, 'erreur'); showDeckImport(); return deckErr(error); }
+
+  // 3) choix des versions, deck par deck
+  deckResults = good.map((d) => {
+    const rows = [], missing = [];
+    for (const c of d.cards) {
+      const all = found[dkNorm(c.name)] || [];
+      // même nom (sans tenir compte des espaces), sinon même édition + même numéro (le numéro vient du site du deck)
+      let cands = all.filter((x) => dkKey(x.en) === dkKey(c.name) || dkKey(x.name) === dkKey(c.name));
+      const same = c.set && c.num ? all.find((x) => x.set === c.set && dkNum(x.num) === dkNum(c.num)) : null;
+      if (!cands.length && same) cands = all.filter((x) => dkKey(x.en) === dkKey(same.en));
+      { const seen = new Set(); cands = cands.filter((x) => !seen.has(x.id) && seen.add(x.id)); }
+      const exact = cands.filter((x) => x.set === c.set && dkNum(x.num) === dkNum(c.num)).sort((a, b) => a.price - b.price)[0] || null;
+      let pick = exact;
+      if (deckState.mode === 'cheap') {
+        const cheap = cands.filter((x) => x.avail > 0 && isFinite(x.price)).sort((a, b) => a.price - b.price)[0];
+        if (cheap && (!exact || !isFinite(exact.price) || cheap.price < exact.price - 0.001)) pick = cheap;
+      }
+      if (!pick) { missing.push(c); continue; }
+      rows.push({ card: c, before: exact, after: pick });
+    }
+    return { name: (d.deck.name || T('Deck importé')).slice(0, 40), game: gamePath, mode: deckState.mode, rows, missing };
+  });
+  deckUnread = bad.map((d) => d.u.href);
+  logAction('Import de deck : ' + deckResults.map((r) => `« ${r.name} » ${r.rows.length} carte(s) trouvée(s)` + (r.missing.length ? `, introuvables : ${r.missing.map((c) => c.name + (c.set ? ` (${c.set} ${c.num})` : '')).join(', ')}` : '')).join(' · ') + (deckUnread.length ? ' · illisibles : ' + deckUnread.join(' ') : ''), deckUnread.length || deckResults.some((r) => r.missing.length) ? 'erreur' : 'info');
+  deckTab = 0;
+  showDeckResult();
+}
+let deckResults = [], deckTab = 0, deckUnread = [];
+
+function showDeckResult() {
+  const r = deckResults[deckTab], back = deckModal();
+  if (!r) return;
+  const cheap = r.mode === 'cheap';
+  const total = (key) => r.rows.reduce((a, x) => a + (x[key] && isFinite(x[key].price) ? x[key].price * x.card.qty : 0), 0);
+  const nCards = r.rows.reduce((a, x) => a + x.card.qty, 0);
+  const img = (p) => p && p.img ? `<img class="zoomable" src="${esc(p.img)}" alt="${esc(p.name || '')}" title="${esc(T('Cliquer pour agrandir'))}" loading="lazy">` : '<span class="noimg">?</span>';
+  const pr = (p) => p && isFinite(p.price) ? euro(p.price) : '—';
+  const line = (x) => {
+    const changed = cheap && x.before !== x.after;
+    const save = changed && x.before && isFinite(x.before.price) ? (x.before.price - x.after.price) * x.card.qty : 0;
+    return `<tr class="${changed ? 'chg' : ''}"><td class="q">${x.card.qty}×</td>
+      ${cheap ? `<td class="im">${img(x.before)}</td><td class="ar">${changed ? '→' : ''}</td>` : ''}<td class="im">${img(x.after)}</td>
+      <td class="nm"><b>${esc(x.after.name)}</b><i>${esc([x.after.set, x.after.num && '#' + x.after.num].filter(Boolean).join(' '))}${changed && x.before ? ` · ${esc(T('au lieu de'))} ${esc(x.before.set)} #${esc(x.before.num)}` : ''}</i></td>
+      <td class="pr">${cheap && changed ? `<s>${pr(x.before)}</s> ` : ''}${pr(x.after)}${save > 0.004 ? `<em>−${euro(save)}</em>` : ''}</td></tr>`;
+  };
+  const before = total('before'), after = total('after');
+  const tabs = deckResults.length > 1 ? `<div class="chips dk-tabs">${deckResults.map((d, i) => `<span class="chip ${i === deckTab ? 'on' : ''}" data-dktab="${i}">${esc(d.name)}${d.missing.length ? ' ⚠' : ''}</span>`).join('')}</div>` : '';
+  back.innerHTML = `<div class="wn panel dk wide" role="dialog" aria-modal="true">
+    <button class="wn-x" data-dkclose title="${esc(T('Fermer'))}">✕</button>
+    <h2>📥 ${esc(r.name)}</h2>
+    ${tabs}
+    ${deckUnread.length ? `<div class="dk-miss"><b>${esc(T('Deck(s) illisible(s) (le lien doit être public) :'))}</b> ${esc(deckUnread.join(', '))}</div>` : ''}
+    <p class="dk-hint">${esc(TF('{n} cartes trouvées sur Cardmarket', { n: nCards }))} · ${esc(cheap ? T('Le moins cher possible') : T('Deck identique'))} · ${esc(T('prix « à partir de » sur Cardmarket, tous états et langues'))}</p>
+    ${cheap ? `<div class="dk-sum"><span>${esc(T('Avant'))} <b>${euro(before)}</b></span><span>→</span><span>${esc(T('Après'))} <b>${euro(after)}</b></span><span class="ok">${esc(T('Économie'))} <b>${euro(Math.max(0, before - after))}</b></span></div>` : ''}
+    ${r.missing.length ? `<div class="dk-miss"><b>${esc(TF('{n} carte(s) introuvable(s) sur Cardmarket :', { n: r.missing.length }))}</b> ${esc(r.missing.map((c) => `${c.qty}× ${c.name}${c.set ? ` (${c.set} ${c.num})` : ''}`).join(', '))}
+      <br>${esc(T('Signale-le sur le Discord pour qu\'on corrige ça.'))} <a href="${DISCORD_URL}" target="_blank" rel="noopener">Discord ↗</a></div>` : ''}
+    <div class="dk-table"><table>${r.rows.map(line).join('')}</table></div>
+    <div class="wn-foot"><button class="btn ghost" data-dkback>← ${esc(T('Retour'))}</button>
+      <button class="btn primary" data-dkadd ${deckResults.some((d) => d.rows.length) ? '' : 'disabled'}>${esc(deckResults.length > 1 ? TF('Ajouter les {n} decks à ma liste (une catégorie par deck)', { n: deckResults.length }) : TF('Ajouter à ma liste (catégorie « {c} »)', { c: r.name }))}</button></div>
+  </div>`;
+  back.hidden = false;
+}
+
+function addDeckToList() {
+  let added = 0, merged = 0;
+  const names = [];
+  for (const r of deckResults) {
+    if (!r.rows.length) continue;
+    let cat = r.name.trim() || T('Deck importé');
+    if (!cats.includes(cat)) { cats.push(cat); saveCats(); }
+    names.push(cat);
+    const qtyBy = new Map();
+    for (const x of r.rows) qtyBy.set(x.after.id, { p: x.after, qty: (qtyBy.get(x.after.id)?.qty || 0) + x.card.qty });
+    for (const { p, qty } of qtyBy.values()) {
+      const old = list[p.id];
+      if (old) { old.qty = (+old.qty || 0) + qty; old.checked = true; if (!old.cat) old.cat = cat; merged++; continue; }
+      list[p.id] = { id: p.id, name: p.name, sub: [p.expName, p.en !== p.name ? p.en : ''].filter(Boolean).join(' - '), game: r.game, url: p.url,
+        img: p.img, qty, checked: true, added: Date.now(), cat };
+      added++;
+    }
+  }
+  if (!names.length) return;
+  saveList();
+  viewCat = names.length === 1 ? names[0] : ''; saveCats();
+  $('deckModal').hidden = true;
+  renderAll();
+  banner(TF('Deck « {d} » ajouté : {a} nouvelle(s) carte(s){m}. Tu peux lancer le scan.', { d: names.join(' », « '), a: added, m: merged ? TF(', {n} déjà dans ta liste (quantité ajoutée)', { n: merged }) : '' }));
+}
+
+document.getElementById('deckImport')?.addEventListener('click', showDeckImport);

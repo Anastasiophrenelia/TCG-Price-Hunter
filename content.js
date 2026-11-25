@@ -4,7 +4,7 @@
  * Toute copie, modification ou redistribution sans autorisation écrite de l'auteur est interdite (voir LICENSE).
  */
 // TCG Price Hunter — tourne sur les pages produit Cardmarket
-// 1) barre sous le titre : "Scanner cette page" / "Ajouter" (charge toutes les offres avec "Montrer plus de résultats")
+// 1) barre sous le titre : "Scanner cette page" / "Ajouter" (prend les offres affichées, sans « Montrer plus de résultats »)
 // 2) sur chaque offre : ✕ ignorer cette offre · 🚫 bloquer le vendeur
 // 3) entoure en vert les vendeurs choisis dans ton meilleur panier
 // 4) scan automatique quand la page est ouverte par TCG Price Hunter (adresse qui finit par #cmpm-scan=ID)
@@ -48,32 +48,18 @@
     return list;
   }
 
-  // Clique "Montrer plus de résultats" jusqu'au bout, puis enregistre les offres
+  // Enregistre les offres affichées sur la page (sans cliquer sur « Montrer plus de résultats »)
   async function scanPage(auto = false) {
     if (scanning) return 0;
     const info = productInfo();
     if (!info) return 0;
     const settings = (await chrome.storage.local.get('cmSettings')).cmSettings || {};
-    const max = 50; // 50 offres max (1 requête) : au-delà Cardmarket bloque (erreur 1015)
     const qtyInput = document.querySelector('#cmpm-box input[data-a="qty"]');
     if (qtyInput && !auto) pendingQty = parseInt(qtyInput.value, 10) || 1;
     scanning = true; stopScan = false;
-    let fails = 0, count = 0;
+    let count = 0;
     try {
-      while (!stopScan && rows().length < max) {
-        scanMsg = TF('Chargement… {n} offres', { n: rows().length }); renderBox();
-        if (auto && autoId) chrome.storage.local.set({ ['cmAuto_' + autoId]: { state: 'scanning', rows: rows().length, t: Date.now() } });
-        const btn = document.getElementById('loadMoreButton');
-        if (!visible(btn)) {
-          if (!(await waitFor(() => visible(document.getElementById('loadMoreButton')), 3000))) break;
-          continue;
-        }
-        const n = rows().length;
-        btn.click(); // "Montrer plus de résultats"
-        const ok = await waitFor(() => rows().length > n, 20000);
-        if (!ok) { if (++fails >= 2) break; } else fails = 0;
-        await sleep(auto ? 2500 : 2000); // doucement, sinon Cardmarket bloque
-      }
+      // on prend seulement les offres affichées : jamais de clic sur « Montrer plus de résultats » (ça fait bloquer Cardmarket, erreur 1015)
       const offers = [...rows()].map(parseRow).filter(Boolean);
       count = offers.length;
       const list = await getList();

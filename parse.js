@@ -95,6 +95,7 @@
       game: (path || '').split('/')[2] || '',
       url: path || '',
       img: /^https?:/.test(src) ? src : '',
+      metacard: doc.querySelector('#AddWantsForm input[name="idMetacard"], input[name="idMetacard"]')?.value || '', // pour la liste de souhaits
     };
   }
 

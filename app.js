@@ -7,7 +7,9 @@
 const ORIGIN = 'https://www.cardmarket.com';
 const START_GAP = 1200;       // ms entre 2 requêtes par défaut : 50 par minute
 const BETA = false;           // version de test : affiche « BETA » à côté du numéro
-const CART_GAP = 1000;         // ms entre deux ajouts au panier
+const CART_GAP = 1000;
+const MAX_OFFERS = 300, MAX_SLICES = 9, MAX_SLICES_LONG = 60; // MAX_SLICES : pages en plus par carte au maximum (ton pays découpé + les autres pays ensemble)
+
 const MAX_PER_MIN = 280;      // jamais plus de 280 cartes (requêtes) par minute
 const baseGap = () => Math.ceil(60000 / MAX_PER_MIN); // ≈ 215 ms minimum entre deux requêtes ; sinon la suivante part dès qu'une carte est finie
 const SCAN_TIMEOUT = 180000;  // une carte qui met plus de 3 min = échec
@@ -64,7 +66,7 @@ async function loadAll() {
   if (!settings.v101) { settings.concurrency = 3; settings.v101 = true; }
   settings.concurrency = 3; // toujours 3 cartes scannées en même temps
   delete settings.reqPerMin;
-  settings.maxOffers = 50; // 50 offres max par carte = 1 seule requête (au-delà, Cardmarket bloque : erreur 1015)
+  settings.maxOffers = MAX_OFFERS; // plusieurs pages filtrées par carte (pays, type de vendeur, langue), sans « Montrer plus »
   // langue de l'extension : prise UNE fois au 1er lancement (langue du navigateur, pas l'IP → un VPN ne change rien)
   if (!settings.uiLang) {
     const det = I18N.detect();
@@ -72,20 +74,28 @@ async function loadAll() {
     settings.uiRegion = det.region;
     chrome.storage.local.set({ cmSettings: settings });
   }
-  if (!settings.v65) { settings.countryFromLang = true; settings.v65 = true; chrome.storage.local.set({ cmSettings: settings }); } // coché de base pour tout le monde
-  if (settings.countryFromLang) settings.myCountry = countryForLang(settings.uiLang, settings.uiRegion);
+  // pays de livraison : deviné une fois (fuseau horaire + langues du navigateur), puis tu le changes librement
+  if (!settings.v120) {
+    settings.v120 = true;
+    if (settings.countryFromLang !== false || !settings.myCountry) settings.myCountry = detectHomeCountry(); // l'ancienne case « même pays que la langue » disparaît
+    delete settings.countryFromLang;
+    chrome.storage.local.set({ cmSettings: settings });
+  }
   I18N.setLang(settings.uiLang);
   if (!settings.myCountry) settings.myCountry = 12;                       // pays où tu te fais livrer
   if (!Array.isArray(settings.sellerCountries)) settings.sellerCountries = []; // [] = tous les pays (par défaut)
   // par défaut : pays de l'UE -> « Europe (sans douane) », sinon « seulement mon pays » (réglé une fois, puis plus besoin de toucher)
   if (!settings.v112) { settings.v112 = true; settings.sellerPreset = settings.sellerPreset === 'custom' ? 'custom' : 'auto'; }
-  if (settings.sellerPreset === 'auto') setSellerPreset('auto');
+  if (!settings.v113) { settings.v113 = true; if (settings.sellerPreset === 'nocustoms') settings.sellerPreset = 'auto'; }
+  if (!settings.v130) { settings.v130 = true; settings.sellerPreset = 'europe'; chrome.storage.local.set({ cmSettings: settings }); } // 1.3 : « sans frais de douane » pour tout le monde
+  if (['auto', 'europe'].includes(settings.sellerPreset)) setSellerPreset(settings.sellerPreset);
   cats = d.cmCats || [];
   ignored = d.cmIgnored || {};
   blocked = d.cmBlocked || {};
   lastCartFailed = Array.isArray(d.cmCartFailed) ? d.cmCartFailed : [];
   cartRetryIds = Array.isArray(d.cmCartRetry) ? d.cmCartRetry : [];
   cartResume = Array.isArray(d.cmCartResume) ? d.cmCartResume : [];
+  cmCompare = d.cmCompare || null;
   scans = {};
   for (const k of Object.keys(d)) if (k.startsWith('scan_')) scans[k.slice(5)] = d[k];
 }
@@ -97,11 +107,47 @@ function countryForLang(lang, region) {
   if (region && REGION_ID[region] && (LANG_REGIONS[lang] || []).includes(region)) return REGION_ID[region];
   return LANG_COUNTRY[lang] || 12;
 }
+// pays où tu habites, deviné sans IP (un VPN ne change rien) : fuseau horaire de l'ordinateur + langues du navigateur.
+// Sous Windows, un fuseau couvre plusieurs pays (Europe/Berlin = Allemagne, Pays-Bas, Italie, Suisse…) : la langue départage.
+const TZ_COUNTRIES = {
+  'Europe/Paris': [12, 2, 10, 8], 'Europe/Berlin': [7, 23, 17, 1, 4, 28, 24, 20, 18, 22], 'Europe/Busingen': [7], 'Europe/Budapest': [15, 6, 31, 30],
+  'Europe/Warsaw': [25, 35], 'Europe/Kiev': [11, 9, 21, 19, 3], 'Europe/Kyiv': [11, 9, 21, 19, 3], 'Europe/Bucharest': [27, 14, 5], 'Europe/London': [13, 16, 26],
+  'Europe/Belfast': [13], 'Europe/Brussels': [2], 'Europe/Madrid': [10], 'Atlantic/Canary': [10], 'Africa/Ceuta': [10], 'Europe/Copenhagen': [8],
+  'Europe/Amsterdam': [23], 'Europe/Rome': [17], 'Europe/Vienna': [1], 'Europe/Zurich': [4, 18], 'Europe/Stockholm': [28], 'Europe/Oslo': [24],
+  'Europe/Luxembourg': [20], 'Europe/Vaduz': [18], 'Europe/Malta': [22], 'Europe/Prague': [6], 'Europe/Bratislava': [31], 'Europe/Ljubljana': [30],
+  'Europe/Zagreb': [35], 'Europe/Helsinki': [11], 'Europe/Tallinn': [9], 'Europe/Riga': [21], 'Europe/Vilnius': [19], 'Europe/Sofia': [3],
+  'Europe/Athens': [14], 'Asia/Nicosia': [5], 'Europe/Nicosia': [5], 'Asia/Famagusta': [5], 'Europe/Dublin': [16], 'Europe/Lisbon': [26],
+  'Atlantic/Madeira': [26], 'Atlantic/Azores': [26], 'Atlantic/Reykjavik': [37], 'Asia/Tokyo': [36], 'Asia/Singapore': [29],
+  'America/Toronto': [33], 'America/Montreal': [33], 'America/Vancouver': [33], 'America/Edmonton': [33], 'America/Winnipeg': [33],
+  'America/Halifax': [33], 'America/St_Johns': [33], 'America/Regina': [33], 'America/Moncton': [33],
+};
+const LANG_HOME = { ...LANG_COUNTRY, sv: 28, nb: 24, nn: 24, no: 24, da: 8, cs: 6, sk: 31, sl: 30, hr: 35, hu: 15, fi: 11, et: 9, lv: 21, lt: 19, bg: 3, ro: 27, el: 14, is: 37, ga: 16, mt: 22, ja: 36, lb: 20 };
+function detectHomeCountry() {
+  let tz = '';
+  try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch {}
+  const langs = (navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || '']).map((l) => String(l));
+  const regions = langs.map((l) => REGION_ID[(l.split('-')[1] || '').toUpperCase()]).filter(Boolean); // fr-CH -> Suisse
+  const fromLang = [...langs.map((l) => LANG_HOME[l.slice(0, 2).toLowerCase()]), LANG_HOME[settings.uiLang]].filter(Boolean); // de -> Allemagne
+  const cands = TZ_COUNTRIES[tz];
+  if (cands) return regions.find((id) => cands.includes(id)) || fromLang.find((id) => cands.includes(id)) || cands[0];
+  return regions[0] || countryForLang(settings.uiLang, settings.uiRegion);
+}
 const T = (s) => I18N.T(s), TF = (s, v) => I18N.TF(s, v);
 const TP = (fr, key, v) => (I18N.getLang() === 'fr' ? fr : TF(key, v)); // garde les vrais pluriels en français
 const saveList = () => chrome.storage.local.set({ cmList: list });
 const saveSettings = () => chrome.storage.local.set({ cmSettings: settings });
 const saveCats = () => chrome.storage.local.set({ cmCats: cats });
+// une catégorie qui avait des cartes et qui tombe à 0 (cartes supprimées ou rangées ailleurs) disparaît toute seule ;
+// une catégorie créée vide (0 → 0) reste
+const catCounts = () => { const m = {}; Object.values(list).forEach((it) => { if (it.cat) m[it.cat] = (m[it.cat] || 0) + 1; }); return m; };
+function dropEmptiedCats(before) {
+  const now = catCounts();
+  const gone = cats.filter((c) => (before[c] || 0) > 0 && !now[c]);
+  if (!gone.length) return;
+  cats = cats.filter((c) => !gone.includes(c));
+  if (gone.includes(viewCat)) viewCat = '';
+  saveCats();
+}
 const items = () => Object.values(list).sort((a, b) => (b.added || 0) - (a.added || 0));
 
 // ---------- Filtres des offres ----------
@@ -158,9 +204,13 @@ const LAUNCH_STEP = 300; // (pour l'estimation)
 // filtres envoyés directement à Cardmarket : il ne renvoie que les offres utiles (triées par prix)
 // → les 50 premières suffisent presque toujours = 1 seule requête par carte
 const CM_LANG_ID = { Anglais: 1, Français: 2, Allemand: 3, Espagnol: 4, Italien: 5, 'Chinois-S': 6, Japonais: 7, Portugais: 8, Russe: 9, Coréen: 10, 'Chinois-T': 11 };
+// filtres de la colonne de gauche de Cardmarket, testés : sellerCountry=7,1,17 (plusieurs pays), sellerReputation=1 (Extraordinaire) … 5 (Mauvais)
 function scanQuery(it) {
   const q = new URLSearchParams();
-  if (settings.sellerCountries.length === 1) q.set('sellerCountry', settings.sellerCountries[0]);
+  const sc = settings.sellerCountries;
+  if (sc.length && sc.length < COUNTRIES.length) q.set('sellerCountry', [...sc].map(Number).sort((a, b) => a - b).join(','));
+  const rep = +settings.minRating || 0; // 2 = Moyen et + … 5 = Extraordinaire  ->  Cardmarket : 4 … 1
+  if (rep >= 2) q.set('sellerReputation', 6 - rep);
   const langs = cardLangs(it).map((l) => CM_LANG_ID[l]).filter(Boolean).sort((a, b) => a - b);
   if (langs.length) q.set('language', langs.join(','));
   const c = cardCond(it);
@@ -169,7 +219,7 @@ function scanQuery(it) {
 }
 function scanUrl(it) {
   const u = new URL(ORIGIN + it.url.split('#')[0]);
-  for (const k of ['sellerCountry', 'language', 'minCondition']) u.searchParams.delete(k);
+  for (const k of ['sellerCountry', 'sellerReputation', 'language', 'minCondition']) u.searchParams.delete(k);
   for (const [k, v] of new URLSearchParams(scanQuery(it))) u.searchParams.set(k, v);
   return u.toString().replace(/%2C/g, ',');
 }
@@ -189,8 +239,9 @@ async function slot() {
     const now = Date.now();
     if (job.pausedUntil > now || job.challenge) { await sleep(400); continue; }
     if (job.probe && job.probeBusy) { await sleep(300); continue; } // après un captcha : une seule requête test à la fois
-    if (job.nextReq <= now) { job.nextReq = now + job.gap; if (job.probe) { job.probeBusy = true; return true; } return false; }
-    await sleep(Math.min(job.nextReq - now, 300));
+    const wait = job.nextReq - now;
+    if (wait <= 0) { job.nextReq = now + job.gap; if (job.probe) { job.probeBusy = true; return true; } return false; }
+    await sleep(Math.min(wait, 300));
   }
 }
 
@@ -299,38 +350,68 @@ async function rawFetch(url, form) {
 }
 
 // une requête, avec gestion des blocages / captcha
-// ---------- Journal des requêtes (pour voir quand Cardmarket freine) ----------
+// ---------- Journal d'activité (pour aider quand quelqu'un signale un bug) ----------
+// Chaque ligne = une vraie action (scan, comparaison, import de deck, ajout au panier…) ou une requête à Cardmarket,
+// avec ce qu'elle visait (quelle carte, quel filtre). Les lignes de plus de 7 jours sont supprimées une par une.
+const LOG_DAYS = 7, LOG_MAX = 5000;
 let reqLog = [];
 let reqLogSave = null;
-function logReq(e) {
-  const now = Date.now(), prev = reqLog[reqLog.length - 1];
-  reqLog.push({ t: now, since: prev ? now - prev.t : 0, ...e });
-  if (reqLog.length > 5000) reqLog = reqLog.slice(-5000);
+function pruneLog() { const min = Date.now() - LOG_DAYS * 86400000; reqLog = reqLog.filter((e) => e.t >= min).slice(-LOG_MAX); }
+function pushLog(e) {
+  const now = Math.round(Date.now()), prev = reqLog[reqLog.length - 1];
+  reqLog.push({ t: now, since: prev ? Math.round(now - prev.t) : 0, ...e });
+  if (reqLog.length > LOG_MAX || (reqLog[0] && reqLog[0].t < now - LOG_DAYS * 86400000)) pruneLog();
   clearTimeout(reqLogSave); reqLogSave = setTimeout(() => chrome.storage.local.set({ cmReqLog: reqLog }), 1500);
   const n = $('nReqLog'); if (n) n.textContent = reqLog.length;
 }
-const reqKind = (url, form) => (/ShoppingCart/.test(url) ? 'panier' : /LoadMore/.test(url) ? 'plus d\'offres' : form ? 'autre' : 'page carte');
+const logReq = (e) => pushLog({ type: 'requête', ...e });
+// action de la personne ou étape importante (level : info | erreur)
+const logAction = (what, level = 'info') => pushLog({ type: level === 'erreur' ? 'ERREUR' : 'action', what: String(what).slice(0, 300) });
+const reqKind = (url, form) => (/ShoppingCart/.test(url) ? 'panier' : /AddWantByProduct/.test(url) ? 'liste de souhaits' : /Products\/Search/.test(url) ? 'recherche' : /ShoppingWizard/.test(url) ? 'shopping wizard' : form ? 'autre' : /\/Products\//.test(url) ? 'page carte' : 'page');
+// ce que visait la requête, en clair : « Charme · France particuliers · FR »
+function reqWhat(url, form) {
+  try {
+    const u = new URL(url, ORIGIN);
+    if (form && form.idProduct) return (list[form.idProduct]?.name || 'carte ' + form.idProduct) + (form.amount ? ' ×' + form.amount : '');
+    if (form && form.idArticle) return 'article ' + form.idArticle;
+    const q = u.searchParams.get('searchString'); if (q) return '« ' + q + ' »';
+    if (/\/Products\//.test(u.pathname)) {
+      const it = Object.values(list).find((x) => x.url && u.pathname.endsWith(x.url.split('?')[0].replace(/^\/\w\w\//, '/')));
+      const parts = [it ? it.name : decodeURIComponent(u.pathname.split('/').pop())];
+      const c = (u.searchParams.get('sellerCountry') || '').split(',').filter(Boolean);
+      if (c.length === 1) parts.push(COUNTRIES.find(([x]) => String(x) === c[0])?.[1] || c[0]); else if (c.length > 1) parts.push(c.length + ' pays');
+      const t = u.searchParams.get('sellerType'); if (t) parts.push(t === '0' ? 'particuliers' : 'pros');
+      const l = u.searchParams.get('language'); if (l && /^\d+$/.test(l)) parts.push('langue ' + l);
+      return parts.join(' · ');
+    }
+    return u.pathname.replace(/^\/\w\w\/\w+\//, '').slice(0, 60);
+  } catch { return ''; }
+}
 function exportReqLog() {
+  pruneLog();
   const L = reqLog, fmt = (t) => new Date(t).toLocaleString('fr-FR');
-  const blocks = L.filter((e) => e.result !== 'ok' && e.result !== 'connexion');
-  const first = blocks[0];
-  const iFirst = first ? L.indexOf(first) : -1;
+  const reqs = L.filter((e) => e.type !== 'action' && e.type !== 'ERREUR');
+  const blocks = reqs.filter((e) => e.result && e.result !== 'ok' && e.result !== 'connexion');
+  const errs = L.filter((e) => e.type === 'ERREUR');
+  const cl = (id) => COUNTRIES.find(([x]) => x === +id)?.[1] || id;
   const lines = [
-    'Journal des requêtes TCG Price Hunter — exporté le ' + fmt(Date.now()),
-    `Requêtes : ${L.length}` + (L.length ? ` (du ${fmt(L[0].t)} au ${fmt(L[L.length - 1].t)})` : ''),
-    first ? `1er blocage : requête n°${iFirst + 1}, ${first.result}, ${Math.round((first.t - L[0].t) / 1000)} s après la 1re requête` : 'Aucun blocage enregistré',
-    `Blocages : ${blocks.length} (1015 : ${L.filter((e) => e.result === '1015').length}, 429 : ${L.filter((e) => e.result === '429').length}, captcha : ${L.filter((e) => e.result === 'captcha').length}, 403 : ${L.filter((e) => e.result === '403').length})`,
+    'Journal d\'activité TCG Price Hunter — exporté le ' + fmt(Date.now()),
+    `Version : ${appVersion} (${BUILD}) · Navigateur : ${navigator.userAgent.replace(/\s*\(.*?\)\s*/g, ' ').trim()}`,
+    `Réglages : mode de scan ${scanMode()} · livré en ${cl(settings.myCountry)} · vendeurs ${settings.sellerPreset || '?'} (${settings.sellerCountries.length || 'tous les'} pays) · note min ${settings.minRating || 0} · état min ${settings.defaultCond || 'tous'} · langues ${(settings.defaultLangs || []).join(',') || 'toutes'}`,
+    `Cartes dans la liste : ${Object.keys(list).length} (${Object.values(list).filter((i) => i.checked).length} cochées) · lignes gardées ${LOG_DAYS} jours`,
+    `Lignes : ${L.length}` + (L.length ? ` (du ${fmt(L[0].t)} au ${fmt(L[L.length - 1].t)})` : '') + ` · requêtes : ${reqs.length} · erreurs : ${errs.length}`,
+    `Blocages : ${blocks.length} (1015 : ${reqs.filter((e) => e.result === '1015').length}, 429 : ${reqs.filter((e) => e.result === '429').length}, captcha : ${reqs.filter((e) => e.result === 'captcha').length}, 403 : ${reqs.filter((e) => e.result === '403').length})`,
     '',
-    'n;date;écart avec la précédente (ms);type;statut HTTP;résultat;durée (ms);rythme réglé (ms)',
-    ...L.map((e, i) => [i + 1, fmt(e.t), e.since, e.kind, e.status, e.result, e.ms, e.gap].join(';')),
+    'date;type;quoi;détail;statut HTTP;résultat;durée (ms);écart (ms)',
+    ...L.map((e) => [fmt(e.t), e.type || 'requête', e.kind || '', (e.what || '').replace(/;/g, ','), e.status ?? '', e.result || '', e.ms ?? '', e.since ?? ''].join(';')),
   ];
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob(['\ufeff' + lines.join('\n')], { type: 'text/plain;charset=utf-8' }));
-  a.download = 'tcg-price-hunter-requetes-' + new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-') + '.txt';
+  a.href = URL.createObjectURL(new Blob(['﻿' + lines.join('\n')], { type: 'text/plain;charset=utf-8' }));
+  a.download = 'tcg-price-hunter-journal-' + new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-') + '.txt';
   a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
-async function request(url, form) {
+async function request(url, form, slow = false) {
   let lastErr = '';
   for (let attempt = 0; attempt < 10; attempt++) {
     const probe = await slot();
@@ -348,7 +429,7 @@ async function request(url, form) {
         : res.status === 429 ? '429'
         : res.status === 403 && /Access denied|Too Many/i.test(head) ? '403'
         : /^\s*Please login to continue/i.test(t) ? 'connexion' : 'ok';
-      logReq({ kind: reqKind(url, form), status: res.status, result, ms: Date.now() - t0, gap: job.gap });
+      logReq({ kind: reqKind(url, form), what: reqWhat(url, form), status: res.status, result, ms: Date.now() - t0 });
     }
     if (res.status === 0) { lastErr = t.replace(/^ERREUR\s*/, '').slice(0, 120); if ((job.workerOpened || 0) >= 2) break; continue; }
     // Cloudflare "Error 1015 - You are being rate limited" = blocage temporaire pour trop de requêtes
@@ -357,6 +438,16 @@ async function request(url, form) {
     // mais ce n'est PAS un blocage : on met tout en pause, tu coches la case, et le scan reprend
     if (!is1015 && /<title>\s*(Just a moment|Un instant|Attention Required)/i.test(head)) {
       await solveChallenge(url.includes('AjaxAction') ? null : url);
+      continue;
+    }
+    // 1re erreur 1015 pendant un scan : pause de 1 min 30, puis on repart plus doucement avec 50 offres par carte
+    // (les cartes gardent les offres déjà chargées). Une 2e fois : on arrête, comme avant.
+    if ((is1015 || res.status === 429) && job.active && !job.kind && !job.hit1015) {
+      job.hit1015 = true; job.noMore = true;
+      job.gap = Math.max(job.gap * 2, 500);
+      job.pauseStart = Date.now(); job.pausedUntil = Date.now() + 90000;
+      job.pauseReason = is1015 ? 'Trop de requêtes (erreur 1015)' : 'Cardmarket freine';
+      if (slow || /Product_LoadMoreArticles/.test(url)) throw new Error('pause'); // la carte garde ce qu'elle a déjà
       continue;
     }
     if (is1015 || res.status === 429 || (res.status === 403 && /Access denied|Too Many/i.test(head))) {
@@ -425,48 +516,119 @@ function solveChallenge(url) {
   return challengePromise;
 }
 
-// Scanne une carte : page + "Montrer plus" par requêtes
+// Scanne une carte : 1re page (50 offres). S'il y en a plus ET que la 50e est encore assez bon marché pour compter,
+// on recharge la page avec d'autres filtres (ton pays par type de vendeur puis par langue, puis les autres pays ensemble).
+// Jamais de « Montrer plus ».
 async function scanCard(id) {
   const it = list[id];
   const url = scanUrl(it);
-  const max = +settings.maxOffers || 50;
   const r = job.running.get(id);
-
-  let res = await request(url);
+  const res = await request(url);
   if (res.login) throw new Error('connexion demandée');
-  let doc = new DOMParser().parseFromString(res.text, 'text/html');
-  let loggedOut = !!doc.querySelector('input[name="username"]');
+  const doc = new DOMParser().parseFromString(res.text, 'text/html');
+  const loggedOut = !!doc.querySelector('input[name="username"]');
   if (loggedOut) { job.loggedOut = true; const e = new Error('déconnecté'); e.logout = true; throw e; } // pas connecté : on arrête tout
   const info = CMParse.productInfo(doc, it.url);
   if (!info) {
     const title = (doc.title || '').trim().slice(0, 60) || (res.text || '').replace(/\s+/g, ' ').trim().slice(0, 60);
     throw new Error(`page inattendue — statut ${res.status}, « ${title} »`);
   }
+  if (info.img && info.img !== it.img) { it.img = info.img; job.listDirty = true; } // enregistré une seule fois à la fin du scan
+  if (info.id && (it.idProduct !== info.id || (info.metacard && it.idMetacard !== info.metacard))) { it.idProduct = info.id; if (info.metacard) it.idMetacard = info.metacard; job.listDirty = true; } // pour le comparateur
   const offers = [...doc.querySelectorAll('.article-row')].map(CMParse.parseRow).filter(Boolean);
   r.rows = offers.length;
-  let partial = false;
-
-  // la suite ("Montrer plus de résultats")
   const lm = CMParse.loadMoreParams(doc);
-  if (lm && !loggedOut && offers.length >= 50) {
-    let page = lm.page || '1';
-    for (let guard = 0; guard < 200; guard++) {
-      if (offers.length >= max) { partial = true; break; }
-      const more = await request(ajaxUrl(url), { ...lm, page });
-      if (more.login) break;
-      let parsed = CMParse.parseLoadMore(more.text || '');
-      if (!parsed) { partial = true; break; }
-      offers.push(...parsed.offers);
-      r.rows = offers.length;
-      renderProgress();
-      if (parsed.maxReached || !parsed.offers.length || !parsed.newPage) break;
-      page = parsed.newPage;
-    }
+  const st = { id, url, offers, seen: new Set(offers.map(artKey)), t0: r.t0 };
+  // plus de 50 offres : au lieu de « Montrer plus » (qui fait bloquer Cardmarket, erreur 1015), on recharge la page
+  // avec d'autres filtres de pays : les 50 moins chères de ton pays, puis des pays aux frais de port les plus bas
+  // découpage intelligent : une offre plus chère ne peut faire baisser le panier que de l'économie d'un envoi au plus.
+  // Si la 50e offre coûte déjà plus que « la moins chère + un envoi », les autres pages ne servent à rien : 1 page suffit.
+  // 3 modes (menu sous « Scanner ») : rapide = 1 page ; moyen (par défaut) = pages en plus seulement si elles peuvent servir ;
+  // long = ton pays découpé + chaque autre pays un par un, sans limite de prix
+  const mode = scanMode();
+  st.mode = mode;
+  st.cutoff = mode === 'long' ? Infinity : cutoffPrice(offers);
+  if (mode !== 'fast' && lm && !job.noMore && offers.length >= 50 && lastPrice(offers) <= st.cutoff) {
+    st.slices = sliceCountries(it, mode); st.left = mode === 'long' ? MAX_SLICES_LONG : MAX_SLICES;
+    try { while (await scanMore(st)) { /* page suivante, sans pause */ } }
+    catch (e) { await finishCard(st, true); throw e; } // scan arrêté : la carte garde ce qu'elle a déjà
+    return finishCard(st, true);
   }
-
-  if (info.img && info.img !== it.img) { it.img = info.img; job.listDirty = true; } // enregistré une seule fois à la fin du scan
-  scans[id] = { date: Date.now(), offers, url: it.url, partial, loggedOut, q: scanQuery(it) };
-  await chrome.storage.local.set({ ['scan_' + id]: scans[id] });
+  return finishCard(st, !!lm);
+}
+const prices = (offers) => offers.map((o) => o.price).filter((p) => isFinite(p) && p > 0);
+const lastPrice = (offers) => Math.max(...prices(offers), 0); // la page est triée par prix : la plus chère = la 50e
+// la plus chère offre qui peut encore servir : la moins chère + ce que coûte un envoi (port + douane) depuis le pays le plus cher choisi
+function cutoffPrice(offers) {
+  const p = prices(offers);
+  if (!p.length) return Infinity;
+  if (job.shipMax == null) { // calculé une fois par scan
+    const allowed = settings.sellerCountries.length ? settings.sellerCountries.map(Number) : COUNTRIES.map(([x]) => x);
+    let ship = 0;
+    for (const c of allowed) { const f = feeInfo(c); if (f) ship = Math.max(ship, ...f.parts); }
+    job.shipMax = ship || 5; // tarifs pas encore chargés : 5 € par prudence
+  }
+  return Math.min(...p) + job.shipMax;
+}
+const artKey = (o) => o.aid || [o.seller, o.price, o.cond, o.lang, o.extra, o.qty].join('|');
+// pages en plus : TON pays (celui de livraison, pas forcément la France) coupé en particuliers / pros + power sellers,
+// puis tous les autres pays autorisés ensemble sur une seule page
+function sliceCountries(it, mode) {
+  const allowed = settings.sellerCountries.length ? settings.sellerCountries.map(Number) : COUNTRIES.map(([x]) => x);
+  const home = +settings.myCountry;
+  const others = allowed.filter((c) => c !== home);
+  const mine = allowed.includes(home) ? [{ c: [home], t: '0' }, { c: [home], t: '1,2' }] : [];
+  if (mode === 'long') { // chaque pays un par un, du port le moins cher au plus cher
+    const score = (c) => feeInfo(c)?.score ?? 99;
+    return mine.concat(others.sort((a, b) => score(a) - score(b)).map((c) => ({ c: [c], one: true })));
+  }
+  // tous les autres pays d'un coup (1 seule page) : les 50 moins chères hors de chez toi
+  return mine.concat(others.length ? [{ c: others }] : []);
+}
+const SCAN_MODES = { fast: 640, medium: 19.2, long: 6.6 }; // cartes par minute (mesuré : 32 cartes = 10 s / 1 min 47 / 4 min 58)
+const scanMode = () => (SCAN_MODES[settings.scanMode] ? settings.scanMode : 'medium');
+function sliceUrl(url, sl) {
+  const u = new URL(url);
+  u.searchParams.set('sellerCountry', sl.c.join(','));
+  if (sl.t) u.searchParams.set('sellerType', sl.t); else u.searchParams.delete('sellerType');
+  if (sl.l) u.searchParams.set('language', sl.l);
+  return u.toString().replace(/%2C/g, ',');
+}
+// une page de plus pour la carte (autre pays / type de vendeur / langue) ; renvoie false quand c'est fini
+async function scanMore(st) {
+  const r = job.running.get(st.id);
+  if (job.noMore || !job.active || !st.slices.length || st.left <= 0) return false;
+  const sl = st.slices.shift(); st.left--;
+  let res;
+  try { res = await request(sliceUrl(st.url, sl), null, true); }
+  catch (e) { if (e.message === 'stop') throw e; return false; } // garde ce qu'on a déjà
+  if (res.login) return false;
+  const doc = new DOMParser().parseFromString(res.text || '', 'text/html');
+  const got = [...doc.querySelectorAll('.article-row')].map(CMParse.parseRow).filter(Boolean);
+  for (const o of got) { const k = artKey(o); if (!st.seen.has(k)) { st.seen.add(k); st.offers.push(o); } }
+  // ce groupe a encore plus de 50 offres : on le redécoupe (type de vendeur, puis langue).
+  // Ton pays passe d'abord ; les autres pays aussi s'il reste de la place (utile si ton pays a peu d'offres, ex. Hongrie)
+  if (got.length >= 50 && CMParse.loadMoreParams(doc) && !sl.l && !sl.one && lastPrice(got) <= st.cutoff) { // seulement si ce morceau peut encore cacher des offres utiles
+    let kids = [];
+    if (!sl.t) kids = ['0', '1,2'].map((t) => ({ c: sl.c, t }));
+    else {
+      const it = list[st.id] || {};
+      const chosen = cardLangs(it).map((l) => CM_LANG_ID[l]).filter(Boolean);
+      const counts = {};
+      if (chosen.length !== 1) got.forEach((o) => { const n = CM_LANG_ID[o.lang]; if (n && (!chosen.length || chosen.includes(n))) counts[n] = (counts[n] || 0) + 1; });
+      const langs = Object.keys(counts).sort((a, b) => counts[b] - counts[a]).slice(0, 3);
+      if (langs.length >= 2) kids = langs.map((l) => ({ c: sl.c, t: sl.t, l }));
+    }
+    st.slices.unshift(...kids);
+  }
+  if (r) r.rows = st.offers.length;
+  renderProgress();
+  return st.slices.length > 0 && st.left > 0;
+}
+async function finishCard(st, partial) {
+  scans[st.id] = { date: Date.now(), offers: st.offers, url: list[st.id]?.url, partial, loggedOut: false, q: scanQuery(list[st.id]) };
+  await chrome.storage.local.set({ ['scan_' + st.id]: scans[st.id] });
+  return 'done';
 }
 
 async function startScan(ids) {
@@ -477,12 +639,15 @@ async function startScan(ids) {
     ids.forEach((id) => { if (!job.queue.includes(id) && !job.running.has(id)) { job.queue.push(id); job.total++; } });
     return renderProgress();
   }
+  logAction(`Scan lancé : ${ids.length} carte(s), mode ${scanMode()}`);
   try { chrome.permissions.request({ origins: [ORIGIN + '/*', 'https://product-images.s3.cardmarket.com/*', 'https://help.cardmarket.com/*'] }).catch(() => {}); } catch {}
   Object.assign(job, { active: true, queue: [...ids], running: new Map(), done: 0, total: ids.length, failed: [], pausedUntil: 0,
-    strikes: 0, challenge: null, loggedOut: false, logoutStop: false, t0: Date.now(), durations: [], doneTimes: [], okIds: new Set(), nextReq: 0, gap: baseGap(), workerTab: null, workerOpened: 0, lastErr: '', challenges: 0, probe: false, probeBusy: false, stopReason: '', pauseReason: '' });
+    strikes: 0, cont: [], challenge: null, loggedOut: false, logoutStop: false, t0: Date.now(), durations: [], doneTimes: [], okIds: new Set(), nextReq: 0, gap: baseGap(), workerTab: null, workerOpened: 0, lastErr: '', challenges: 0, probe: false, probeBusy: false, stopReason: '', pauseReason: '', hit1015: false, noMore: false, shipMax: null });
   job.appTab = await chrome.tabs.getCurrent().catch(() => null);
   job.timer = setInterval(renderProgress, 500);
+  showScanSite();
   renderProgress();
+  await Promise.race([loadEuropeTables().catch(() => {}), sleep(3000)]); // tarifs de port : pour savoir quand une page en plus peut servir
 
   const par = Math.max(1, Math.min(5, +settings.concurrency || 3));
   const worker = async () => {
@@ -511,9 +676,12 @@ async function startScan(ids) {
   endScan(!job.active);
 }
 
+const showScanSite = () => { const el = $('progSite'); if (el) el.textContent = '🌐 ' + TF('Sur {s}', { s: siteOf(settings.site).name }); };
 function endScan(stopped = false) {
   clearInterval(job.timer);
   job.active = false;
+  // cartes encore en pause (scan arrêté) : on garde les offres déjà chargées
+  (job.cont || []).splice(0).forEach((c) => { finishCard(c.st, true); job.okIds?.add(c.st.id); });
   if (job.listDirty) { job.listDirty = false; saveList(); }
   // cartes re-scannées : on les enlève de la liste « Pas ajoutés au panier » (recalcule puis réessaie l'ajout)
   if (job.okIds && lastCartFailed.some((f) => job.okIds.has(f.id))) setCartFailed(lastCartFailed.filter((f) => !job.okIds.has(f.id)));
@@ -521,6 +689,7 @@ function endScan(stopped = false) {
   if (job.workerTab != null) { chrome.tabs.remove(job.workerTab).catch(() => {}); job.workerTab = null; }
   const ok = job.done - job.failed.length;
   const msgs = [];
+  logAction(`Scan ${stopped ? 'arrêté' : 'terminé'} : ${ok}/${job.total} carte(s) scannée(s)` + (job.failed.length ? ` · échecs : ${job.failed.join(', ')}` : '') + (job.stopReason ? ` · ${job.stopReason}` : ''), job.stopReason || job.failed.length ? 'erreur' : 'info');
   if (job.stopReason) msgs.push('⏹ ' + job.stopReason);
   if (job.failed.length) msgs.push('❌ Échec pour : ' + job.failed.join(' · '));
   if (job.logoutStop) {
@@ -559,8 +728,8 @@ function cardsPerMin(final) {
 const fmtRate = (r) => r ? TF('⌀ {n} cartes par minute', { n: r.toLocaleString(I18N.getLang(), { maximumFractionDigits: r < 10 ? 1 : 0 }) }) : '';
 // estimation : 130 cartes par minute + ~7 s de démarrage (ouverture et chargement de la page Cardmarket)
 const EST_PER_MIN = 130, EST_START_SEC = 7;
-function estimateSec(nCards, started) {
-  return nCards ? (started ? 0 : EST_START_SEC) + (nCards / EST_PER_MIN) * 60 : 0;
+function estimateSec(nCards, started, mode = scanMode()) {
+  return nCards ? (started ? 0 : EST_START_SEC) + (nCards / (SCAN_MODES[mode] || EST_PER_MIN)) * 60 : 0;
 }
 function etaText() {
   const now = Date.now();
@@ -600,7 +769,7 @@ function renderProgress() {
   if (job.kind === 'cart') renderCartProg();
   $('scanbox').hidden = false;
   $('stopBtn').hidden = false;
-  $('progTitle').textContent = job.kind === 'cart' ? 'Ajout au panier Cardmarket' : 'Scan en cours';
+  $('progTitle').textContent = job.kind === 'cart' ? 'Ajout au panier Cardmarket' : job.kind === 'compare' ? T('Comparaison avec Cardmarket') : 'Scan en cours';
   $('progCount').textContent = `${job.done}/${job.total}`;
   $('barFill').style.width = (job.total ? Math.round((job.done / job.total) * 100) : 0) + '%';
   const wait = Math.ceil((job.pausedUntil - Date.now()) / 1000);
@@ -614,7 +783,7 @@ function renderProgress() {
     } else if (/1015/.test(job.pauseReason)) {
       bannerHtml(`<b id="ban1015">⏸ Erreur 1015 : ${CM_LINK} t'a bloqué temporairement.</b><br>
         <b>Raison :</b> trop de requêtes en peu de temps (protection anti-robot Cloudflare de ${CM_LINK}).<br>
-        <b>Il faut réessayer plus tard :</b> le scan fait une pause de <span id="banWait">${fmtDur(wait)}</span> (reprise vers <span id="banBack">${back}</span>) et repart tout seul, avec des requêtes plus espacées. Si c'est encore bloqué à la reprise, il refait une pause de 10 min.<br>
+        <b>Il faut réessayer plus tard :</b> le scan fait une pause de <span id="banWait">${fmtDur(wait)}</span> (reprise vers <span id="banBack">${back}</span>) et repart tout seul, avec des requêtes plus espacées. Les cartes en cours gardent les offres déjà chargées, et le scan continue avec 50 offres par carte. Si c'est encore bloqué à la reprise, le scan s'arrête (les cartes déjà scannées sont gardées).<br>
         <b>Pendant la pause :</b> ne recharge pas ${CM_LINK}, ça peut prolonger le blocage. Tu peux continuer à regarder tes cartes et calculer le panier avec ce qui est déjà scanné.<br>
         <b>Si ça revient souvent :</b> baisse « Cartes scannées en même temps » dans les Réglages, ou scanne tes cartes par catégorie plutôt que tout d'un coup.<br>
         <a href="https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1015/" target="_blank">En savoir plus sur l'erreur 1015 (Cloudflare)</a>`, key);
@@ -627,10 +796,10 @@ function renderProgress() {
     : job.challenge ? T('🛡️ Captcha à valider dans l\'onglet ouvert…')
     : job.probe ? T('⏳ Captcha validé : reprise en cours, attends quelques secondes…')
     : TF('{n} en cours · {q} en attente', { n: job.running.size, q: job.queue.length }) + (job.failed.length ? ' · ' + TF('{n} échec(s)', { n: job.failed.length }) : '');
-  $('progRate').textContent = job.kind !== 'cart' ? fmtRate(cardsPerMin()) : '';
-  $('progEta').textContent = job.challenge ? T('⏱ En pause le temps du captcha, attends…') : job.probe ? T('⏱ Reprise du scan…') : job.kind === 'cart' ? '' : etaText();
+  $('progRate').textContent = !job.kind ? fmtRate(cardsPerMin()) : '';
+  $('progEta').textContent = job.challenge ? T('⏱ En pause le temps du captcha, attends…') : job.probe ? T('⏱ Reprise du scan…') : job.kind ? '' : etaText();
   $('progList').innerHTML = [...job.running.entries()].map(([id, r]) =>
-    `<div>⏳ ${esc(r.label || list[id]?.name || id)}${r.rows ? ` <i>${r.rows} offres</i>` : ''}</div>`).join('');
+    `<div>${r.paused ? '⏸' : '⏳'} ${esc(r.label || list[id]?.name || id)}${r.rows ? ` <i>${esc(TF('{n} offres', { n: r.rows }))}</i>` : ''}</div>`).join('');
 }
 
 // ---------- Ajouter le meilleur panier au panier Cardmarket ----------
@@ -662,6 +831,7 @@ async function addToCart(orders, preset, mode) {
   if (!preset) orders.forEach((o) => o.lines.forEach(({ line, opt }) => opt.picked.forEach((p) =>
     items.push({ id: line.id, aid: p.aid, take: p.take, price: p.price, name: line.name, seller: o.seller, url: line.url }))));
   if (!items.length) return;
+  logAction(`Ajout au panier lancé : ${items.length} article(s)`);
   const noAid = items.filter((i) => !i.aid);
   if (noAid.length) return banner(`Re-scanne d'abord ces cartes (scannées avec une ancienne version, il manque le n° d'article) : ${[...new Set(noAid.map((i) => i.name))].join(', ')}`);
   const nCards = items.reduce((a, i) => a + i.take, 0);
@@ -675,6 +845,7 @@ async function addToCart(orders, preset, mode) {
   job.gap = CART_GAP; // ajout au panier : plus doux qu'un scan (1 article par seconde), sinon Cardmarket refuse en silence
   job.appTab = await chrome.tabs.getCurrent().catch(() => null);
   job.timer = setInterval(renderProgress, 500);
+  showScanSite();
   job.cartItems = items.length;
   showCartProg(true);
   renderProgress();
@@ -746,6 +917,7 @@ async function addToCart(orders, preset, mode) {
   job.active = false; job.kind = '';
   if (job.workerTab != null) { chrome.tabs.remove(job.workerTab).catch(() => {}); job.workerTab = null; }
   const ok = job.done - job.failed.length;
+  logAction(`Ajout au panier ${stopped ? 'arrêté' : 'terminé'} : ${ok}/${job.total} article(s)` + (job.failed.length ? ` · pas ajoutés : ${job.failed.slice(0, 10).join(', ')}` : '') + (job.stopReason ? ` · ${job.stopReason}` : ''), job.failed.length || job.stopReason ? 'erreur' : 'info');
   $('progTitle').textContent = stopped ? 'Ajout arrêté' : 'Ajout au panier terminé';
   $('progCount').textContent = `${job.done}/${job.total}`;
   $('progText').textContent = `✔ ${ok} article${ok > 1 ? 's' : ''} ajouté${ok > 1 ? 's' : ''}` + (job.failed.length ? ` · ${job.failed.length} échec(s)` : '');
@@ -756,6 +928,299 @@ async function addToCart(orders, preset, mode) {
     (job.stopReason ? `<br>⏹ ${esc(job.stopReason)}` : ''));
   if (lastResult) renderBest(); // affiche la liste « Pas ajoutés au panier » à droite
 }
+
+// ---------- Comparateur : Shopping Wizard de Cardmarket (même liste, mêmes filtres) ----------
+// 1 liste de souhaits par jeu « TCGPRICEHUNTER <JEU> » : créée si besoin, vidée, remplie avec tes cartes (quantité, langues, état),
+// puis le Shopping Wizard « Réduire le prix » est lancé dans l'onglet Cardmarket, et on lit son total.
+let cmCompare = null; // { sig, date, total, wanted, found, results: [{ game, url, total, value, ship, orders, wanted, found }] }
+const compareSig = (lines) => JSON.stringify([lines.map((l) => [l.id, l.qty, cardCond(list[l.id] || {}), cardLangs(list[l.id] || {})]).sort(), [...settings.sellerCountries].sort(), +settings.minRating || 0]);
+const wantsListName = (game) => ('TCGPRICEHUNTER ' + String(game).toUpperCase().replace(/[^A-Z0-9]/g, '')).slice(0, 30);
+const parseEuro = (s) => { const m = String(s || '').replace(/\s/g, '').match(/-?[\d.]*\d+(?:,\d+)?/); return m ? parseFloat(m[0].replace(/\./g, '').replace(',', '.')) : NaN; };
+
+// fait aller l'onglet Cardmarket à une adresse et attend qu'elle soit chargée (captcha compris)
+async function workerGo(url) {
+  const tabId = await workerTab();
+  await new Promise((resolve) => {
+    let seenLoading = false;
+    const l = (id, info) => { if (id !== tabId) return; if (info.status === 'loading') seenLoading = true; if (info.status === 'complete' && seenLoading) { chrome.tabs.onUpdated.removeListener(l); clearTimeout(to); resolve(); } };
+    chrome.tabs.onUpdated.addListener(l);
+    const to = setTimeout(() => { chrome.tabs.onUpdated.removeListener(l); resolve(); }, 45000);
+    chrome.tabs.update(tabId, { url }).catch(() => { chrome.tabs.onUpdated.removeListener(l); clearTimeout(to); resolve(); });
+  });
+  await sleep(800);
+  for (let i = 0; i < 200; i++) { // captcha : on attend que tu coches la case
+    const t = await chrome.tabs.get(tabId).catch(() => null);
+    if (!t || !/Un instant|Just a moment|Attention Required|Vérification/i.test(t.title || '')) break;
+    if (i === 0) banner(T('🛡️ Cardmarket demande une vérification anti-robot : coche la case dans l\'onglet Cardmarket ouvert, ça reprend tout seul.'), 'captcha-wait');
+    await sleep(1500);
+  }
+  return tabId;
+}
+async function inWorker(func, args = []) {
+  const tabId = await workerTab();
+  const [res] = await withTimeout(chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func, args }), 30000);
+  return res ? res.result : null;
+}
+const docOf = (res) => new DOMParser().parseFromString((res && res.text) || '', 'text/html');
+const wantIds = (doc) => [...new Set([...doc.querySelectorAll('[data-id-want]')].map((e) => e.getAttribute('data-id-want')))];
+
+async function runCompare() {
+  logAction('Comparaison Cardmarket lancée');
+  if (job.active) return banner(T('Un scan ou un ajout est déjà en cours, attends la fin.'));
+  if (!lastResult) return;
+  const lines = lastResult.lines;
+  const byGame = {};
+  lines.forEach((l) => { const it = list[l.id]; if (!it) return; const g = (it.url || '').split('/')[2] || l.game; (byGame[g] = byGame[g] || []).push(it); });
+  const games = Object.keys(byGame);
+  if (!confirm(TF('Comparer avec le Shopping Wizard de Cardmarket ?\n\nLa liste de souhaits « {l} » de ton compte Cardmarket sera vidée puis remplie avec tes {n} cartes, puis le Shopping Wizard sera lancé (rien n\'est acheté).', { l: games.map(wantsListName).join(' », « '), n: lines.length }))) return;
+  try { chrome.permissions.request({ origins: [ORIGIN + '/*'] }).catch(() => {}); } catch {}
+  Object.assign(job, { active: true, queue: [], running: new Map(), done: 0, total: lines.length + games.length * 3, failed: [], pausedUntil: 0, strikes: 0,
+    challenge: null, loggedOut: false, t0: Date.now(), durations: [], nextReq: 0, gap: CART_GAP, workerTab: null, workerOpened: 0,
+    lastErr: '', challenges: 0, probe: false, probeBusy: false, stopReason: '', pauseReason: '', kind: 'compare', cont: [] });
+  job.appTab = await chrome.tabs.getCurrent().catch(() => null);
+  job.timer = setInterval(renderProgress, 500);
+  $('scanbox').hidden = false; $('stopBtn').hidden = false;
+  showScanSite();
+  const step = (label) => { job.running.clear(); job.running.set('cmp', { t0: Date.now(), rows: 0, label }); renderProgress(); };
+  const results = [];
+  let error = '';
+  try {
+    for (const game of games) {
+      const its = byGame[game];
+      const lang = (its[0].url || '').split('/')[1] || 'fr';
+      const base = `${ORIGIN}/${lang}/${game}`;
+      const name = wantsListName(game);
+      // 1) la liste « TCGPRICEHUNTER <JEU> » : on la retrouve, ou on la crée
+      step(TF('Liste de souhaits « {l} »', { l: name }));
+      // toujours LA MÊME liste « TCGPRICEHUNTER <JEU> » : on la retrouve (peu importe la casse ou la langue du site), on la vide
+      // et on la réutilise. On n'en crée une que si elle n'existe vraiment pas.
+      const findList = (doc) => { for (const a of doc.querySelectorAll('a[href*="/Wants/"]')) { const m = a.getAttribute('href').match(/\/Wants\/(\d+)(?:[/?#]|$)/); const box = a.closest('.card, .col-12, .row'); if (m && box && box.textContent.replace(/\s+/g, ' ').toUpperCase().includes(name.toUpperCase())) return m[1]; } return null; };
+      let ov = docOf(await request(`${base}/Wants`));
+      const acct = (ov.getElementById('account-dropdown')?.textContent || '').replace(/\(.*$/s, '').trim(); // ton pseudo Cardmarket
+      if (ov.querySelector('input[name="username"]')) throw new Error(T('tu n\'es pas connecté à Cardmarket'));
+      let idList = findList(ov);
+      if (!idList && settings.cmWants?.[game]) { // la liste retenue la dernière fois (si elle existe encore)
+        const old = docOf(await request(`${base}/Wants/${settings.cmWants[game]}`));
+        if ((old.title || '').toUpperCase().includes(name.toUpperCase())) idList = settings.cmWants[game];
+      }
+      if (!idList) {
+        const f = [...ov.forms].find((x) => /CreateWantsList/.test(x.getAttribute('action') || ''));
+        if (!f) throw new Error(T('impossible de créer la liste de souhaits'));
+        await request(new URL(f.getAttribute('action'), ORIGIN).href, { __cmtkn: f.querySelector('[name=__cmtkn]').value, wlName: name });
+        ov = docOf(await request(`${base}/Wants`));
+        idList = findList(ov);
+        if (!idList) throw new Error(T('impossible de créer la liste de souhaits'));
+      }
+      if (settings.cmWants?.[game] !== idList) { settings.cmWants = { ...(settings.cmWants || {}), [game]: idList }; saveSettings(); }
+      job.done++;
+      // 2) on la vide (comme « Tout cocher » puis « Supprimer la sélection » sur la page de la liste)
+      let ld = docOf(await request(`${base}/Wants/${idList}`));
+      if (wantIds(ld).length) {
+        step(TF('On vide « {l} »', { l: name }));
+        // comme « Supprimer la sélection » : le formulaire envoie la liste des ids en JSON (["id1","id2",…]).
+        // On l'envoie directement (marche aussi sur Firefox, sans cliquer dans la page)
+        const delTok = ld.querySelector('#DeleteForm input[name="__cmtkn"]')?.value || ld.querySelector('input[name="__cmtkn"]')?.value || '';
+        await request(`${base}/PostGetAction/WantsList_MassDeleteWants`, { __cmtkn: delTok, idWants: JSON.stringify(wantIds(ld)), idWantsList: idList });
+        ld = docOf(await request(`${base}/Wants/${idList}`));
+        if (wantIds(ld).length) { // plan B : par la page, comme avant
+          await workerGo(`${base}/Wants/${idList}`);
+          await inWorker(() => { const ca = document.querySelector('[name=checkAll]'); if (!ca) return 'none'; ca.checked = true; ca.dispatchEvent(new Event('change', { bubbles: true })); document.querySelectorAll('[name="checkWantsRow[]"]').forEach((c) => { c.checked = true; }); setTimeout(() => document.getElementById('deleteSelected')?.click(), 300); return 'ok'; }).catch(() => null);
+          const tabId = await workerTab();
+          for (let i = 0; i < 40; i++) { await sleep(500); const t = await chrome.tabs.get(tabId).catch(() => null); if (t && t.status === 'complete' && i > 2) break; }
+          ld = docOf(await request(`${base}/Wants/${idList}`));
+        }
+        if (wantIds(ld).length) throw new Error(T('impossible de vider la liste de souhaits'));
+      }
+      job.done++;
+      // 3) on ajoute chaque carte (quantité, langues, état : pas de valeurs pré-remplies), 3 à la fois.
+      // L'id de la carte dans ta liste EST son idProduct Cardmarket : pas besoin de recharger sa page.
+      // le jeton de sécurité (__cmtkn) : une liste VIDE n'a aucun formulaire, donc pas de jeton. On le prend sur la page
+      // « Ajouter une Deck List » de la liste (toujours là), sinon sur la page des listes. C'est le même pour toute la session.
+      const freshToken = async () => { const d = docOf(await request(`${base}/Wants/${idList}/AddDeckList`)); return d.querySelector('input[name="__cmtkn"]')?.value || ov.querySelector('input[name="__cmtkn"]')?.value || ''; };
+      let token = await freshToken();
+      let refreshing = null;
+      const missing = [];
+      job.gap = 334; // 3 cartes par seconde
+      const queue = [...its];
+      const addOne = async (it) => {
+        const idProduct = it.idProduct || it.id;
+        const body = { __cmtkn: token, idProduct, idWantsList: idList, amount: String(it.qty || 1), minCondition: String(COND_RANK[cardCond(it)] || 7), 'extra[isFoil]': '0', wishPrice: '' };
+        if (it.idMetacard) body.idMetacard = it.idMetacard;
+        cardLangs(it).map((l) => CM_LANG_ID[l]).filter(Boolean).forEach((n) => { body[`idLanguage[${n}]`] = String(n); });
+        for (let tries = 0; ; tries++) {
+          const res = await request(`${base}/AjaxAction/Wantslist_AddWantByProduct`, body);
+          if (res.login) throw new Error(T('tu n\'es pas connecté à Cardmarket'));
+          const ans = cartAnswer(res.text || '');
+          if (ans.ok) return;
+          if (tries === 0 && /time-?out|refresh|réessayer|actualise/i.test(ans.msg)) { // jeton périmé : un seul rafraîchissement pour les 3 en même temps
+            const used = body.__cmtkn;
+            if (token === used) { refreshing = refreshing || freshToken().then((t) => { if (t) token = t; refreshing = null; }); await refreshing; }
+            body.__cmtkn = token; continue;
+          }
+          missing.push(`${it.name} (${ans.msg})`); return;
+        }
+      };
+      const adder = async () => {
+        while (queue.length) {
+          if (!job.active) throw new Error('stop');
+          const it = queue.shift();
+          const key = 'add:' + it.id;
+          job.running.set(key, { t0: Date.now(), rows: 0, label: TF('Ajout de {c} à la liste', { c: it.name }) });
+          renderProgress();
+          try { await addOne(it); } finally { job.running.delete(key); }
+          job.done++;
+        }
+      };
+      job.running.delete('cmp');
+      await Promise.all([adder(), adder(), adder()]);
+      // la liste ne doit pas être vide, sinon Cardmarket n'affiche pas le Shopping Wizard
+      ld = docOf(await request(`${base}/Wants/${idList}`));
+      if (!wantIds(ld).length) throw new Error(T('aucune carte n\'a pu être ajoutée à la liste de souhaits') + (missing.length ? ' : ' + missing.slice(0, 3).join(', ') : ''));
+      // 4) le Shopping Wizard « Réduire le prix », avec tes pays de vendeurs et ta réputation minimale
+      step(TF('Shopping Wizard Cardmarket ({g})', { g: game }));
+      await workerGo(`${base}/Wants/ShoppingWizard?idWantsList=${idList}`);
+      const rep = +settings.minRating || 0;
+      const sc = settings.sellerCountries.length < COUNTRIES.length ? settings.sellerCountries.map(String) : [];
+      // tout est SYNCHRONE dans la page (Firefox n'attend pas une fonction async injectée, surtout si la page change ensuite),
+      // et le bouton est cliqué un peu après le retour, pour que la réponse arrive avant le changement de page
+      const wizard = async () => inWorker((idL, countries, repu) => {
+        if ([...document.querySelectorAll('.alert-danger')].some((a) => /Shopping Wizard/i.test(a.textContent) && /dépass|exceed|überschritt|supera|limit/i.test(a.textContent))) return 'limit';
+        const f = document.getElementById('ShoppingWizardForm');
+        if (!f) return 'noform';
+        const wl = f.querySelector('[name=idWantsList]'); if (wl) wl.value = idL;
+        // pays des vendeurs : la liste de Cardmarket est un menu maison (jQuery) au-dessus d'un <select> caché ;
+        // il faut passer par le menu (ouvrir, survoler, cliquer), sinon les pays ne sont pas pris en compte
+        const sel = f.querySelector('select[name="sellerCountry[]"]');
+        const $ = window.jQuery;
+        if (sel) {
+          const wrap = sel.parentElement;
+          if ($) {
+            for (const t of [...wrap.querySelectorAll('.selected-item:not(.list-item-template)')]) $(t).trigger('click'); // on vide
+            for (const v of countries) {
+              const li = wrap.querySelector(`li[data-option-value="${v}"]`);
+              if (!li || li.classList.contains('selected')) continue;
+              $(wrap).trigger('click'); $(li).trigger('mouseover'); $(li).trigger('click');
+            }
+          }
+          // filet de sécurité : le <select> caché doit avoir exactement ces pays
+          [...sel.options].forEach((o) => { o.selected = countries.includes(o.value); });
+          if ([...sel.selectedOptions].length !== countries.length) return 'countries';
+        }
+        f.querySelectorAll('input[name^="sellerType"]').forEach((c) => { c.checked = false; });
+        const r = f.querySelector('[name=sellerReputation]'); if (r) { r.value = String(repu); r.dispatchEvent(new Event('change', { bubbles: true })); }
+        const m = f.querySelector('[name=maxShippingTime]'); if (m) { m.value = '7'; m.dispatchEvent(new Event('change', { bubbles: true })); }
+        const st = f.querySelector('input[name=strategy][value="4"]'); if (!st) return 'nostrategy';
+        st.checked = true; st.dispatchEvent(new Event('change', { bubbles: true }));
+        const b = f.querySelector('button[type=submit]'); if (!b) return 'nobutton';
+        b.disabled = false; b.classList.remove('disabled');
+        setTimeout(() => b.click(), 150);
+        return 'ok';
+      }, [idList, sc, rep >= 2 ? 6 - rep : 5]);
+      const limitHit = () => { // « Vous avez dépassé le nombre d'utilisation du Shopping Wizard autorisé pour aujourd'hui. »
+        const prev = settings.cmWizard && settings.cmWizard.day === dayKey() ? settings.cmWizard.used : 0;
+        settings.cmWizard = { day: dayKey(), acct, used: Math.max(prev + 1, WIZARD_PER_DAY + 1) }; saveSettings();
+        return new Error(TF('tu as dépassé les {n} utilisations du Shopping Wizard pour aujourd\'hui sur ce compte Cardmarket. Réessaie demain.', { n: WIZARD_PER_DAY }));
+      };
+      const pageLimit = async () => (await inWorker(() => [...document.querySelectorAll('.alert-danger')].some((a) => /Shopping Wizard/i.test(a.textContent) && /dépass|exceed|überschritt|supera|limit/i.test(a.textContent))).catch(() => false)) === true;
+      let started = await wizard().catch(() => 'maybe'); // pas de réponse : la page a peut-être déjà changé (Firefox) → on regarde si les résultats arrivent
+      if (started === 'maybe') started = 'ok';
+      if (started === 'noform') { await sleep(1500); await workerGo(`${base}/Wants/ShoppingWizard?idWantsList=${idList}`); started = await wizard().catch(() => 'ok'); } // page pas encore prête : on réessaie une fois
+      if (started === 'limit') throw limitHit();
+      if (started !== 'ok') throw new Error(T('le Shopping Wizard de Cardmarket n\'a pas démarré') + ` (${started})`);
+      const tabId = await workerTab();
+      let resUrl = '';
+      for (let i = 0; i < 240 && job.active; i++) {
+        await sleep(1000);
+        const t = await chrome.tabs.get(tabId).catch(() => null);
+        if (t && /\/ShoppingWizard\/Results\//.test(t.url || '') && t.status === 'complete') { resUrl = t.url.split('?')[0]; break; }
+        if (i % 2 === 1 && t && t.status === 'complete' && await pageLimit()) throw limitHit();
+      }
+      if (!resUrl) throw new Error(job.active ? T('le Shopping Wizard de Cardmarket ne répond pas') : 'stop');
+      job.done++;
+      // 5) on lit le résumé : articles recherchés, valeur, articles trouvés, frais de port, commandes, total
+      const rd = docOf(await request(resUrl));
+      const dd = [...(rd.querySelector('dl')?.querySelectorAll('dd') || [])].map((x) => x.textContent.trim());
+      if (dd.length < 6) throw new Error(T('résultats du Shopping Wizard illisibles'));
+      // utilisations du jour : on compte les résultats d'aujourd'hui dans l'historique du Shopping Wizard (= ton compte)
+      try {
+        const hist = docOf(await request(`${base}/Wants/ShoppingWizard/Results`));
+        const d = new Date(), today = String(d.getDate()).padStart(2, '0') + '.' + String(d.getMonth() + 1).padStart(2, '0') + '.' + d.getFullYear();
+        const n = [...hist.querySelectorAll('a[href*="/ShoppingWizard/Results/2"]')].filter((a) => a.textContent.includes(today)).length;
+        const prev = settings.cmWizard && settings.cmWizard.day === dayKey() && settings.cmWizard.acct === acct ? settings.cmWizard.used : 0;
+        settings.cmWizard = { day: dayKey(), acct, used: Math.max(n, prev + 1) };
+      } catch { settings.cmWizard = { day: dayKey(), acct, used: (settings.cmWizard?.day === dayKey() ? settings.cmWizard.used : 0) + 1 }; }
+      saveSettings();
+      results.push({ game, url: resUrl, wanted: parseInt(dd[0], 10) || 0, value: parseEuro(dd[1]), found: parseInt(dd[2], 10) || 0, ship: parseEuro(dd[3]), orders: parseInt(dd[4], 10) || 0, total: parseEuro(dd[5]), missing });
+    }
+  } catch (e) { error = e.message === 'stop' ? T('comparaison arrêtée') : e.message; }
+  clearInterval(job.timer);
+  job.active = false; job.kind = ''; job.running.clear();
+  if (job.listDirty) { job.listDirty = false; saveList(); }
+  if (job.workerTab != null) { chrome.tabs.remove(job.workerTab).catch(() => {}); job.workerTab = null; }
+  $('stopBtn').hidden = true; $('scanbox').hidden = true;
+  backToApp();
+  if (results.length === games.length && !error) {
+    cmCompare = { sig: compareSig(lines), date: Date.now(), results,
+      total: results.reduce((a, x) => a + x.total, 0), wanted: results.reduce((a, x) => a + x.wanted, 0), found: results.reduce((a, x) => a + x.found, 0) };
+    chrome.storage.local.set({ cmCompare });
+    logAction(`Comparaison Cardmarket terminée : ${cmCompare.found}/${cmCompare.wanted} articles, total ${euro(cmCompare.total)}`);
+    banner(null);
+  } else { logAction('Comparaison Cardmarket impossible : ' + (error || '?'), 'erreur'); banner('⚖ ' + T('Comparaison Cardmarket impossible :') + ' ' + (error || '?') + ` [${BUILD}]`); }
+  renderBest();
+}
+
+// compteur : Cardmarket limite le Shopping Wizard à 10 utilisations par jour et par compte.
+// On peut toujours cliquer ; au-delà, le compteur passe en négatif (-1, -2…).
+const WIZARD_PER_DAY = 10;
+const dayKey = (d = new Date()) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+const wizardLeft = () => { const w = settings.cmWizard; return WIZARD_PER_DAY - (w && w.day === dayKey() ? w.used : 0); };
+function wizardHint() {
+  const left = wizardLeft();
+  return `<div class="k cmphint">${esc(TF('{n} utilisations par jour sur ce compte', { n: WIZARD_PER_DAY }))} · ${esc(T('reste aujourd\'hui :'))} <b class="${left < 0 ? 'danger' : left <= 2 ? 'warn' : ''}">${left}</b></div>`;
+}
+
+// tuile « Tu économises (vs comparateur de prix du site) »
+function compareTile(r, lines) {
+  const ok = cmCompare && cmCompare.sig === compareSig(lines);
+  if (!ok) return `<div class="tile cmp"><div class="k">${esc(T('Tu économises (vs comparateur de prix du site)'))}</div>
+    <button class="btn sm" data-cmcompare>⚖ ${esc(T('Comparer avec Cardmarket'))}</button>
+    ${wizardHint()}</div>`;
+  const diff = cmCompare.total - r.total;
+  const links = cmCompare.results.map((x) => `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(cmCompare.results.length > 1 ? x.game : T('Voir les résultats Cardmarket'))} ↗</a>`).join(' · ');
+  const miss = cmCompare.found < cmCompare.wanted;
+  return `<div class="tile cmp"><div class="k">${esc(T('Tu économises (vs comparateur de prix du site)'))}</div>
+    <div class="v" style="color:${diff > 0.005 ? 'var(--ok)' : diff < -0.005 ? '#f87171' : 'var(--mut)'}">${diff > 0.005 ? euro(diff) : diff < -0.005 ? '− ' + euro(-diff) : '0 €'}</div>
+    <div class="k" style="margin-top:4px">${esc(TF('Shopping Wizard Cardmarket : {a}', { a: euro(cmCompare.total) }))} · ${links}</div>
+    ${miss ? `<div class="k danger" style="margin-top:4px">${esc(TF('Cardmarket ne trouve pas certaines cartes : {a} article(s) sur {b}.', { a: cmCompare.found, b: cmCompare.wanted }))}</div>` : ''}
+    ${wizardHint()}
+    <button class="btn ghost xs" data-cmcompare title="${esc(T('Relancer la comparaison'))}">↻</button></div>`;
+}
+
+// ---------- Mode de scan (clic sur « ⏱ ≈ … ») ----------
+let scanEstimateCount = 0;
+const SCAN_MODE_TXT = {
+  fast: ['⚡ Rapide', '50 offres par carte : les moins chères.', '⚡ Rapide'],
+  medium: ['🎯 Moyen', '150 à 350 offres par carte : plus de pages quand les prix sont serrés et que ça peut faire baisser ton panier.', '🎯 Moyen'],
+  long: ['🔍 Long (recommandé au moment de l\'achat)', '250 à 750 offres par carte : ton pays découpé (particuliers, pros, langues) puis chaque pays un par un.', '🔍 Long'],
+};
+function renderScanMode() {
+  const el = $('scanEstimate'); if (!el) return;
+  const n = scanEstimateCount, m = scanMode();
+  const open = el.classList.contains('open');
+  el.innerHTML = `<button type="button" class="sm-btn" data-smopen title="${esc(T('Choisir le mode de scan'))}">${n ? esc(TF('⏱ ≈ {a} pour {n} carte(s)', { a: fmtDur(estimateSec(n)), n })) + ' · ' : ''}${esc(T(SCAN_MODE_TXT[m][2]))} ▾</button>
+    <div class="sm-menu" ${open ? '' : 'hidden'}>${Object.keys(SCAN_MODES).map((k) => `<div class="sm-opt ${k === m ? 'on' : ''}" data-smode="${k}">
+      <b>${esc(T(SCAN_MODE_TXT[k][0]))}</b><span>${esc(T(SCAN_MODE_TXT[k][1]))}</span>
+      <i>${n ? esc(TF('≈ {a} pour {n} carte(s)', { a: fmtDur(estimateSec(n, false, k)), n })) : esc(TF('≈ {a} pour {n} carte(s)', { a: fmtDur(estimateSec(32, false, k)), n: 32 }))}</i></div>`).join('')}</div>`;
+}
+$('scanEstimate').addEventListener('click', (e) => {
+  const el = $('scanEstimate');
+  e.stopPropagation();
+  if (e.target.closest('[data-smopen]')) { el.classList.toggle('open'); return renderScanMode(); }
+  const o = e.target.closest('[data-smode]'); if (!o) return;
+  settings.scanMode = o.dataset.smode; saveSettings();
+  el.classList.remove('open'); renderScanMode();
+});
+document.addEventListener('click', (e) => { const el = $('scanEstimate'); if (el && el.classList.contains('open') && !el.contains(e.target)) { el.classList.remove('open'); renderScanMode(); } });
 
 // ---------- Vue : Cartes scannées ----------
 // la carte n'a AUCUNE offre dans la langue choisie -> en rouge
@@ -793,6 +1258,7 @@ function renderCatBar() {
   h += '<button class="btn ghost sm" data-catact="new">➕ Catégorie</button>';
   if (viewCat && viewCat !== '__none') h += '<button class="btn ghost sm" data-catact="rename">✎ Renommer</button><button class="btn ghost sm danger-t" data-catact="delete">🗑 Supprimer</button>';
   $('catBar').innerHTML = h;
+  renderCondPick();
   $('bulkCat').innerHTML = '<option value="__label">📁 Ranger la sélection dans…</option>' + catOptions('', true).replace('<option value="">Sans catégorie</option>', '<option value="__clear">Sans catégorie</option>');
 }
 function newCategory() {
@@ -834,7 +1300,8 @@ function renderScanned() {
   $('scanSel').textContent = `${T('🔍 Scanner la sélection')} (${nChecked})`;
   $('scanAll').textContent = `${T('Tout scanner')} (${all.length})`;
   { const nf = cartFailedIds().length; $('scanFailed').hidden = !nf; $('scanFailed').textContent = `${T('🔁 Re-scanner les pas ajoutées au panier')} (${nf})`; }
-  $('scanEstimate').textContent = nChecked ? TF('⏱ ≈ {a} pour {n} carte(s)', { a: fmtDur(estimateSec(nChecked)), n: nChecked }) : '';
+  scanEstimateCount = nChecked;
+  renderScanMode();
   if (!rows.length && all.length) {
     $('scanRows').innerHTML = `<div class="empty">Aucune carte dans cette catégorie.<br>Coche des cartes et utilise « 📁 Ranger la sélection dans… », ou change la catégorie d'une carte avec son menu.</div>`;
     return;
@@ -847,7 +1314,7 @@ function renderScanned() {
   // une couleur bien distincte par série : la 1re toujours en bleu, puis rouge, orange, jaune, vert, violet, rose, marron, blanc (puis on recommence)
   const serColor = {};
   Object.entries(serIdx).forEach(([k, i]) => { serColor[k] = SER_COLORS[i % SER_COLORS.length]; });
-  $('scanRows').innerHTML = `<div class="colhead" id="scanHead"><span></span><span></span><span>Carte · langue · état</span><span class="num">Qté</span><span class="num">Offres</span><span class="num">Dès</span><span class="num">Vendeurs</span><span class="num">Scan</span></div>` +
+  $('scanRows').innerHTML = `<div class="colhead" id="scanHead"><span><input type="checkbox" class="chk" id="headChk" title="${esc(T('Cocher / décocher toutes les cartes affichées'))}"></span><span></span><span>Carte · langue · état</span><span class="num">Qté</span><span class="num">Offres</span><span class="num">Dès</span><span class="num">Vendeurs</span><span class="num">Scan</span></div>` +
     rows.map((it) => {
       const s = scans[it.id];
       const running = job.active && (job.running.has(it.id) || job.queue.includes(it.id));
@@ -878,6 +1345,7 @@ function renderScanned() {
         <div class="num"><span>${s ? ago(s.date) : ''}</span> <button class="icon" data-rescan title="Scanner cette carte">↻</button> <button class="icon rm" data-rm title="Retirer">✕</button></div>
       </div>`;
     }).join('');
+  { const hc = $('headChk'); if (hc) { const n = rows.filter((it) => it.checked).length; hc.checked = rows.length > 0 && n === rows.length; hc.indeterminate = n > 0 && n < rows.length; } }
 }
 
 // ---------- Frais de port officiels (API publique de l'aide Cardmarket) ----------
@@ -888,7 +1356,8 @@ async function loadShipTable(from, to) {
   const key = `${from}_${to}`;
   if (Array.isArray(shipTables[key])) return shipTables[key];
   const cached = (await chrome.storage.local.get('ship_' + key))['ship_' + key];
-  if (cached && Date.now() - cached.date < SHIP_MAX_AGE) return (shipTables[key] = cached.methods);
+  // (le stockage transforme Infinity en null : « pas de valeur max » redevient Infinity)
+  if (cached && Date.now() - cached.date < SHIP_MAX_AGE) return (shipTables[key] = cached.methods.map((m) => ({ ...m, maxValue: m.maxValue == null ? Infinity : m.maxValue })));
   try {
     const r = await fetch(`https://help.cardmarket.com/api/shippingCosts?locale=fr&fromCountry=${from}&toCountry=${to}&preview=false`);
     const j = await r.json();
@@ -919,15 +1388,52 @@ const customsZone = (id) => (EU_IDS.has(id) ? 'EU' : id === 4 || id === 18 ? 'CH
 // pays sans douane depuis ton pays de livraison (UE -> les 27 ; Suisse -> Suisse + Liechtenstein ; sinon ton pays)
 const noCustomsIds = () => COUNTRIES.map(([id]) => id).filter((id) => customsZone(id) === customsZone(+settings.myCountry));
 const sameSet = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
-// choix rapide des pays de vendeurs : 'all' | 'nocustoms' | 'mine' | 'custom' ; « mon pays » et « sans douane » suivent ton pays de livraison
+// ---------- Europe « frais réduits » : les pays d'Europe dont le port + la douane vers toi restent proches des moins chers ----------
+// (ex. Italie -> France : 4,88 € la lettre, contre ~2 € depuis la plupart des pays -> exclue ; Royaume-Uni -> UE : douane -> exclu)
+const EUROPE_IDS = COUNTRIES.map(([id]) => id).filter((id) => ![33, 36, 29].includes(id)); // sans Canada, Japon, Singapour
+const FEE_REF = [[4, 5, 3], [17, 20, 1]]; // commandes types : petite lettre (compte 3 fois) et lettre moyenne
+// frais d'un vendeur de ce pays vers toi (port + douane) pour chaque commande type, et leur moyenne pondérée ; null si tarifs inconnus
+function feeInfo(from) {
+  const t = shipTables[`${from}_${settings.myCountry}`];
+  if (!Array.isArray(t) || !t.length) return null;
+  const S = { ...Optimizer.DEFAULTS, ...settings, alwaysTracked: false };
+  const R = settings.customs ? customsRule(from, +settings.myCountry) : null;
+  const parts = FEE_REF.map(([n, v]) => { const port = Optimizer.shipping(n, v, false, S, t).cost; return port + Optimizer.customs(v, port, R); });
+  if (!parts.every(isFinite)) return null;
+  const w = FEE_REF.reduce((a, r) => a + r[2], 0);
+  return { parts, score: parts.reduce((a, x, i) => a + x * FEE_REF[i][2], 0) / w };
+}
+const feeScore = (from) => feeInfo(from)?.score ?? null;
+// « Sans frais de douane » : tous les pays de ta zone douanière, sans limite de prix (UE -> les 27, Suisse -> CH + LI, R.-U. -> R.-U.…)
+const europeIds = () => noCustomsIds();
+// charge les tarifs de tous les pays d'Europe vers toi (gardés 14 jours), 6 à la fois
+let europeLoading = null;
+function loadEuropeTables() {
+  const me = +settings.myCountry;
+  if (europeLoading && europeLoading.me === me) return europeLoading.p;
+  const ids = [...new Set([...COUNTRIES.map(([id]) => id), me])]; // tous les pays : prix affichés sur chaque pays
+  const p = (async () => { for (let i = 0; i < ids.length; i += 6) await Promise.all(ids.slice(i, i + 6).map((id) => loadShipTable(id, me))); })();
+  europeLoading = { me, p };
+  return p;
+}
+// une fois les tarifs chargés : recalcule « Europe (frais réduits) » si c'est le choix actuel
+async function refreshEurope() {
+  await loadEuropeTables();
+  if (!['auto', 'europe'].includes(settings.sellerPreset)) { if (!$('v-settings').hidden) renderSettings(); return; }
+  const before = [...settings.sellerCountries];
+  setSellerPreset(settings.sellerPreset);
+  if (!sameSet(before, settings.sellerCountries)) { saveSettings(); renderScanned(); }
+  renderSettings();
+}
+// choix rapide des pays de vendeurs : 'all' | 'europe' | 'mine' | 'custom' ('auto' = europe, réglage par défaut) ; ils suivent ton pays de livraison
 function setSellerPreset(p) {
+  if (p === 'nocustoms') p = 'europe';
   settings.sellerPreset = p;
   if (p === 'all') settings.sellerCountries = [];
   else if (p === 'mine') settings.sellerCountries = [+settings.myCountry];
-  else if (p === 'nocustoms') settings.sellerCountries = noCustomsIds();
-  else if (p === 'auto') settings.sellerCountries = EU_IDS.has(+settings.myCountry) ? noCustomsIds() : [+settings.myCountry]; // UE -> Europe sans douane, sinon mon pays
+  else if (p === 'europe' || p === 'auto') settings.sellerCountries = europeIds();
 }
-const followCountry = () => { if (['mine', 'nocustoms', 'auto'].includes(settings.sellerPreset)) setSellerPreset(settings.sellerPreset); else if (settings.sellerCountries.length === 1 && settings.sellerPreset !== 'custom') settings.sellerCountries = [+settings.myCountry]; };
+const followCountry = () => { if (['mine', 'europe', 'nocustoms', 'auto'].includes(settings.sellerPreset)) setSellerPreset(settings.sellerPreset); else if (settings.sellerCountries.length === 1 && settings.sellerPreset !== 'custom') settings.sellerCountries = [+settings.myCountry]; refreshEurope(); };
 // drapeau d'un pays (emoji ; une police de drapeaux est incluse pour Windows)
 const flagOf = (id) => { const iso = id === 13 ? 'GB' : ID_ISO[id]; return iso && /^[A-Z]{2}$/.test(iso) ? String.fromCodePoint(...[...iso].map((c) => 0x1f1a5 + c.charCodeAt(0))) : ''; };
 // règle pour un vendeur de ce pays -> toi : TVA du pays de livraison sur (cartes + port)
@@ -1010,7 +1516,8 @@ function renderBest() {
 
   // avertissements
   const warns = [];
-  if (r.short.length) warns.push(`<b>Quantité incomplète</b> (aucun vendeur n'en a assez) : ${r.short.map((l) => `${esc(l.name)} ×${l.qty}`).join(', ')} — le max dispo est pris.`);
+  if (r.short.length) warns.push(`<b>${esc(T('Quantité incomplète'))}</b> ${esc(T('(pas assez d\'exemplaires, même en prenant chez plusieurs vendeurs)'))} : ${r.short.map((l) => `${esc(l.name)} ×${l.qty} (${esc(TF('il en manque {n}', { n: l.missing }))})`).join(', ')}.`);
+  if (r.split && r.split.length) warns.push(`ℹ ${esc(T('Réparti chez plusieurs vendeurs (moins cher, ou personne n\'en a assez seul) :'))} ${r.split.map((l) => `${esc(l.name)} ×${l.qty}`).join(', ')}.`);
   if (lines.some((l) => scans[l.id]?.loggedOut)) warns.push("Certaines cartes ont été scannées sans être connecté (50 offres max) : re-scanne-les une fois connecté.");
   if (warns.length) h += `<div class="warnbox">${warns.join('<br>')}</div>`;
 
@@ -1020,7 +1527,7 @@ function renderBest() {
     <div class="tile main"><div class="k">Total à payer</div><div class="v">${euro(r.total)}</div></div>
     <div class="tile"><div class="k">Cartes</div><div class="v">${euro(r.items)}</div><div class="k" style="margin-top:4px">${(() => { const nb = r.orders.reduce((a, o) => a + o.n, 0), nu = r.unavailable.length; return esc(TP(`${nb} carte${nb > 1 ? 's' : ''} dans le panier`, '{n} carte(s) dans le panier', { n: nb })) + (nu ? ' · ' + esc(TP(`${nu} introuvable${nu > 1 ? 's' : ''}`, '{n} introuvable(s)', { n: nu })) : ''); })()}</div></div>
     <div class="tile"><div class="k">${TP(`Frais de port · ${r.orders.length} commande${r.orders.length > 1 ? 's' : ''}`, 'Frais de port · {n} commande(s)', { n: r.orders.length })}</div><div class="v">${euro(r.ship)}</div>${r.duty > 0.004 ? `<div class="k" style="margin-top:4px">${esc(TF('+ douane / TVA ≈ {a}', { a: euro(r.duty) }))}</div>` : ''}</div>
-    <div class="tile"><div class="k">Tu économises (vs chaque carte au moins cher)</div><div class="v" style="color:${saving > 0.005 ? 'var(--ok)' : 'var(--mut)'}">${saving > 0.005 ? euro(saving) : '0 €'}</div></div>
+    ${compareTile(r, lines)}
   </div>`;
 
   // comparaison des stratégies
@@ -1033,8 +1540,8 @@ function renderBest() {
     ${row(I18N.getLang() === 'fr' ? `🏆 Meilleur panier — ${r.orders.length} commande${r.orders.length > 1 ? 's' : ''}` : TF('🏆 Meilleur panier — {n} commande(s)', { n: r.orders.length }), euro(r.items), euro(r.ship), euro(r.total), r.total <= best + 1e-9, r.duty)}
     ${row('Chaque carte chez le moins cher (sans regarder le port)', euro(r.naive.items), euro(r.naive.ship), euro(r.naive.total), false, r.naive.duty)}
     ${r.single
-      ? row(`Tout chez un seul vendeur : <a href="${esc(sellerUrl(r.single.seller, game))}" target="_blank">${esc(r.single.seller)}</a>`, euro(r.single.items), euro(r.single.ship), euro(r.single.total), false, r.single.duty)
-      : row(`Tout chez un seul vendeur : <span class="muted">personne n'a tout (le meilleur en a ${r.top[0] ? r.top[0].covered : 0}/${nAvail})</span>`, '—', '—', '—', false, null)}
+      ? row(`${esc(T('Tout chez un seul vendeur :'))} <a href="${esc(sellerUrl(r.single.seller, game))}" target="_blank">${esc(r.single.seller)}</a>`, euro(r.single.items), euro(r.single.ship), euro(r.single.total), false, r.single.duty)
+      : row(`${esc(T('Tout chez un seul vendeur :'))} <span class="muted">${esc(TF("personne n'a tout (le meilleur en a {a}/{b})", { a: r.top[0] ? r.top[0].covered : 0, b: nAvail }))}</span>`, '—', '—', '—', false, null)}
   </table></div>`;
 
   // commandes
@@ -1057,12 +1564,12 @@ function renderBest() {
       </div>
       <div class="ob"><table class="t fixed"><colgroup><col style="width:52%"><col style="width:20%"><col style="width:14%"><col style="width:14%"></colgroup>
         <tr><th>Carte</th><th>État / langue</th><th class="r">Prix</th><th class="r">Sous-total</th></tr>
-        ${o.lines.map(({ line, opt, missing }) => `<tr>
-          <td><a href="${esc(ORIGIN + line.url)}" target="_blank">${esc(line.name)}</a> ${line.qty > 1 ? `<span class="muted">×${line.qty}</span>` : ''}${missing ? ` <span class="tag bad">manque ${missing}</span>` : ''}</td>
+        ${o.lines.map(({ line, opt, missing, part }) => `<tr>
+          <td><a href="${esc(ORIGIN + line.url)}" target="_blank">${esc(line.name)}</a> ${part ? `<span class="muted" title="${esc(T('Carte répartie chez plusieurs vendeurs (moins cher, ou personne n\'en a assez seul)'))}">×${opt.units} ${esc(TF('sur {n}', { n: line.qty }))}</span>` : line.qty > 1 ? `<span class="muted">×${line.qty}</span>` : ''}${missing ? ` <span class="tag bad">manque ${missing}</span>` : ''}</td>
           <td class="muted">${esc([...new Set(opt.picked.map((p) => [p.cond, p.lang].filter(Boolean).join(' ')))].join(' · '))}</td>
           <td class="r">${opt.picked.map((p) => euro(p.price) + (p.take > 1 ? ` ×${p.take}` : '')).join(' + ')}</td>
           <td class="r"><b>${euro(opt.cost)}</b></td></tr>`).join('')}
-      </table></div>
+      </table>${o.mergeNote && o.mergeNote.extra < 10 ? `<div class="mergenote">ℹ ${esc(TF('Tout regrouper chez {s} : {n} cartes → {m} {c}, soit {x} de plus. Ce panier est déjà le moins cher.', { s: o.mergeNote.into, n: o.mergeNote.n, m: o.mergeNote.shipName, c: euro(o.mergeNote.ship), x: euro(o.mergeNote.extra) }))}</div>` : ''}</div>
     </div>`).join('');
 
   // top vendeurs
@@ -1089,8 +1596,9 @@ function renderBest() {
   const side = sideUnavail || sideCart ? `<div class="sidecol">${sideUnavail}${sideCart}</div>` : '';
   $('best').innerHTML = `<div class="bestMain">${h}</div>${side}`;
   $('best').classList.toggle('withSide', !!side);
-  const scope = !settings.sellerCountries.length ? 'vendeurs de tous les pays' : settings.sellerCountries.length === 1 ? 'vendeurs : ' + countryName(settings.sellerCountries[0]) : settings.sellerCountries.length + ' pays de vendeurs';
-  $('bestSub').textContent = `${n} carte${n > 1 ? 's' : ''} · ${scope} · livré en ${countryName(settings.myCountry)} · frais de port officiels Cardmarket${settings.alwaysTracked ? ' · toujours en suivi' : ''}${settings.customs ? ' · ' + T('douane comptée (estimation)') : ''}`;
+  const cl = (id) => cLabel(+id, countryName(id));
+  const scope = !settings.sellerCountries.length ? T('vendeurs de tous les pays') : settings.sellerCountries.length === 1 ? TF('vendeurs : {c}', { c: cl(settings.sellerCountries[0]) }) : TF('{n} pays de vendeurs', { n: settings.sellerCountries.length });
+  $('bestSub').textContent = `${TP(`${n} carte${n > 1 ? 's' : ''}`, '{n} carte(s)', { n })} · ${scope} · ${TF('livré en {c}', { c: cl(settings.myCountry) })} · ${T('frais de port officiels Cardmarket')}${settings.alwaysTracked ? ' · ' + T('toujours en suivi') : ''}${settings.customs ? ' · ' + T('douane comptée (estimation)') : ''}`;
 }
 
 // ---------- Vue : Réglages ----------
@@ -1101,31 +1609,36 @@ function renderSettings() {
   });
   const own = shipTables[`${settings.myCountry}_${settings.myCountry}`];
   $('letterInfo').innerHTML = Array.isArray(own) && own.length
-    ? `<b>Tarifs officiels ${esc(countryName(settings.myCountry))} → ${esc(countryName(settings.myCountry))}</b> (mis à jour tout seuls) :<br>` +
-      [[4, 5], [17, 20], [40, 30], [80, 60]].map(([n, v]) => { const x = Optimizer.shipping(n, v, false, settings, own); return `${n} cartes (${v} €) : ${esc(x.name)} ${euro(x.cost)}`; }).join('<br>') +
-      `<br><span class="muted">Lettre 20 g = 4 cartes, 50 g = 17, 100 g = 40. Suivi obligatoire au-dessus de 25 €. Chaque vendeur a les tarifs de SON pays vers le tien.</span>`
-    : 'Tarifs officiels pas encore chargés (ils se chargent au calcul du panier). En attendant, les tarifs manuels ci-dessous sont utilisés.';
+    ? `<b>${esc(TF('Tarifs officiels {a} → {b}', { a: cLabel(+settings.myCountry, countryName(settings.myCountry)), b: cLabel(+settings.myCountry, countryName(settings.myCountry)) }))}</b> ${esc(T('(mis à jour tout seuls) :'))}<br>` +
+      [[4, 5], [17, 20], [40, 30], [80, 60]].map(([n, v]) => { const x = Optimizer.shipping(n, v, false, settings, own); return `${esc(TF('{n} cartes ({v}) :', { n, v: euro(v) }))} ${esc(x.name)} ${euro(x.cost)}`; }).join('<br>') +
+      `<br><span class="muted">${esc(T('Lettre 20 g = 4 cartes, 50 g = 17, 100 g = 40. Suivi obligatoire au-dessus de 25 €. Chaque vendeur a les tarifs de SON pays vers le tien.'))}</span>`
+    : esc(T('Tarifs officiels pas encore chargés (ils se chargent au calcul du panier). En attendant, les tarifs manuels ci-dessous sont utilisés.'));
   $('defLangs').innerHTML = LANGS.map(([n, c]) => `<span class="chip ${settings.defaultLangs.includes(n) ? 'on' : ''}" data-deflang="${esc(n)}" title="${esc(n)}">${c}</span>`).join('');
   $('defCond').innerHTML = `<option value="">Tous états</option>` + CONDS.slice(0, 6).map(([k, l]) => `<option value="${k}" ${settings.defaultCond === k ? 'selected' : ''}>${TF('{c} et mieux', { c: `${k} (${l})` })}</option>`).join('');
   // pays
   const opts = COUNTRIES.map(([id, n]) => `<option value="${id}" ${+settings.myCountry === id ? 'selected' : ''}>${esc(cLabel(id, n))}</option>`).join('');
-  document.querySelectorAll('select[data-s="myCountry"]').forEach((el) => { el.innerHTML = opts; el.value = String(settings.myCountry); el.disabled = !!settings.countryFromLang; el.title = settings.countryFromLang ? T('Même pays que la langue de l\'extension') : ''; });
-  $('countryFromLang').checked = !!settings.countryFromLang;
+  document.querySelectorAll('select[data-s="myCountry"]').forEach((el) => { el.innerHTML = opts; el.value = String(settings.myCountry); el.disabled = false; });
   $('uiLang').innerHTML = I18N.LANGS.map(([c, n, f]) => `<option value="${c}" ${settings.uiLang === c ? 'selected' : ''}>${f} ${n}</option>`).join('');
   const sc = settings.sellerCountries, allIds = COUNTRIES.map(([id]) => id);
   const isAll = !sc.length || sameSet(sc, allIds);
   // « tous les pays » = toutes les cases cochées pour de vrai
-  $('sellerChips').innerHTML = COUNTRIES.map(([id, n]) => `<span class="chip ${isAll || sc.includes(id) ? 'on' : ''}" data-sellerc="${id}"><span class="flag">${flagOf(id)}</span> ${esc(cLabel(id, n))}</span>`).join('');
-  const scope = isAll ? 'all' : sameSet(sc, [+settings.myCountry]) ? 'mine' : sameSet(sc, noCustomsIds()) ? 'nocustoms' : 'custom';
-  const ncLabel = EU_IDS.has(+settings.myCountry) ? T('🇪🇺 Europe (sans douane)') : T('sans douane');
-  document.querySelectorAll('#sellerScope [value=nocustoms], #noCustomsOnly').forEach((el) => { el.textContent = ncLabel; });
+  // pays triés du moins cher au plus cher vers toi (frais moyens d'une commande, douane comprise)
+  const fees = Object.fromEntries(COUNTRIES.map(([id]) => [id, feeInfo(id)]));
+  const sorted = [...COUNTRIES].sort((a, b) => (fees[a[0]]?.score ?? Infinity) - (fees[b[0]]?.score ?? Infinity) || cLabel(a[0], a[1]).localeCompare(cLabel(b[0], b[1])));
+  $('sellerChips').innerHTML = sorted.map(([id, n]) => {
+    const f = fees[id];
+    const tip = f ? TF("Jusqu'à 4 cartes : {a} · jusqu'à 17 cartes : {b} (port + douane)", { a: euro(f.parts[0]), b: euro(f.parts[1]) }) : '';
+    return `<span class="chip ${isAll || sc.includes(id) ? 'on' : ''}" data-sellerc="${id}"${tip ? ` title="${esc(tip)}"` : ''}><span class="flag">${flagOf(id)}</span> ${esc(cLabel(id, n))}${f ? ` <small class="fee">${euro(f.score)}</small>` : ''}</span>`;
+  }).join('');
+  $('europeHint').textContent = TF("Sans frais de douane = tous les pays d'où tu ne paies ni douane ni TVA à l'import vers {c}. Prix sur chaque pays : frais moyens d'une commande. Les pays sont triés du moins cher au plus cher.", { c: cLabel(+settings.myCountry, countryName(settings.myCountry)) });
+  const scope = isAll ? 'all' : sameSet(sc, [+settings.myCountry]) ? 'mine' : sameSet(sc, europeIds()) ? 'europe' : 'custom';
   $('sellerScope').value = scope;
   $('sellerScope').querySelector('[value=custom]').textContent = scope === 'custom' ? TF('Choisis ({n} pays)…', { n: sc.length }) : T('Choisir des pays…');
-  [['myCountryOnly', 'mine'], ['noCustomsOnly', 'nocustoms'], ['allCountries', 'all']].forEach(([k, v]) => $(k).classList.toggle('on', v === scope));
+  [['myCountryOnly', 'mine'], ['europeOnly', 'europe'], ['allCountries', 'all']].forEach(([k, v]) => $(k).classList.toggle('on', v === scope));
   const bl = Object.keys(blocked).sort();
   $('nBlocked').textContent = bl.length ? `(${bl.length})` : '';
-  $('blockedList').innerHTML = bl.length ? bl.map((s) => `<span class="chip on" data-unblock="${esc(s)}" title="Débloquer">${esc(s)} ✕</span>`).join('') : '<span class="muted">Aucun. Bloque un vendeur avec 🚫 sur une page Cardmarket.</span>';
-  $('nIgnored').textContent = `${Object.keys(ignored).length} offre(s)`;
+  $('blockedList').innerHTML = bl.length ? bl.map((s) => `<span class="chip on" data-unblock="${esc(s)}" title="${esc(T('Débloquer'))}">${esc(s)} ✕</span>`).join('') : `<span class="muted">${esc(T('Aucun. Bloque un vendeur avec 🚫 sur une page Cardmarket.'))}</span>`;
+  $('nIgnored').textContent = TF('{n} offre(s)', { n: Object.keys(ignored).length });
 }
 
 // ---------- UI générale ----------
@@ -1150,10 +1663,40 @@ function switchView(v) {
   if (v === 'settings') ensureShipTables().then(renderSettings);
   if (v === 'shipping') renderShipping();
 }
+// écran « calcul en cours » : le calcul bloque la page quelques secondes, on le montre (et on évite les clics partout)
+function busy(on, txt) {
+  let el = $('busyOverlay');
+  if (!el) { el = document.createElement('div'); el.id = 'busyOverlay'; el.innerHTML = '<div class="busy-box"><span class="spinner"></span><b></b></div>'; document.body.appendChild(el); }
+  el.querySelector('b').textContent = txt || '';
+  el.hidden = !on;
+}
+// clic sur une image de carte (.zoomable) : on l'affiche en grand pour lire son texte ; clic ou Échap pour fermer
+document.addEventListener('click', (e) => {
+  const im = e.target.closest('img.zoomable');
+  let z = $('zoomOverlay');
+  if (im) {
+    e.stopPropagation();
+    if (!z) { z = document.createElement('div'); z.id = 'zoomOverlay'; z.innerHTML = '<img alt="">'; z.addEventListener('click', () => (z.hidden = true)); document.body.appendChild(z); }
+    z.querySelector('img').src = im.src; z.querySelector('img').alt = im.alt || '';
+    z.hidden = false;
+  }
+}, true);
+document.addEventListener('keydown', (e) => { const z = $('zoomOverlay'); if (e.key === 'Escape' && z && !z.hidden) { z.hidden = true; e.stopPropagation(); } }, true);
+const nextPaint = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0))));
+let bestBusy = false, bestAgain = false;
 async function refreshBest() {
-  $('best').innerHTML = '<div class="empty">Chargement des frais de port officiels…</div>';
-  await ensureShipTables();
-  compute(); renderBest(); renderSettings();
+  if (bestBusy) { bestAgain = true; return; } // un calcul est déjà en cours : on refera juste après
+  bestBusy = true;
+  try {
+    do {
+      bestAgain = false;
+      busy(true, T('Calcul du meilleur panier…'));
+      await nextPaint(); // laisse le temps d'afficher le chargement avant de calculer
+      await ensureShipTables();
+      await nextPaint();
+      compute(); renderBest(); renderSettings();
+    } while (bestAgain);
+  } finally { busy(false); bestBusy = false; }
 }
 // Messages en haut de la page : ✕ pour fermer ; le mot "Cardmarket" est un lien vers le site
 const CM_LINK = '<a href="https://www.cardmarket.com" target="_blank" class="cmlink" title="Aller sur Cardmarket">Cardmarket</a>';
@@ -1177,6 +1720,12 @@ $('qScan').addEventListener('input', renderScanned);
 $('calcBtn').addEventListener('click', () => switchView('best'));
 $('recalcBtn').addEventListener('click', refreshBest);
 // (tout cocher / décocher agit sur les cartes affichées : catégorie + recherche)
+// case dans l'en-tête : coche / décoche toutes les cartes affichées (catégorie + recherche)
+document.addEventListener('change', (e) => {
+  if (e.target.id !== 'headChk') return;
+  const on = e.target.checked;
+  visibleItems().forEach((it) => (it.checked = on)); saveList(); renderScanned();
+});
 $('allOn').addEventListener('click', () => { visibleItems().forEach((it) => (it.checked = true)); saveList(); renderScanned(); });
 $('allOff').addEventListener('click', () => { visibleItems().forEach((it) => (it.checked = false)); saveList(); renderScanned(); });
 $('bulkCat').addEventListener('change', (e) => {
@@ -1186,8 +1735,47 @@ $('bulkCat').addEventListener('change', (e) => {
   if (v === null) return renderScanned();
   const checked = items().filter((it) => it.checked);
   if (!checked.length) { banner('Coche d\'abord les cartes à ranger.'); return renderScanned(); }
+  const ok = v === '__clear' ? confirm(TF('Retirer {n} carte(s) cochée(s) de leur catégorie (sans catégorie) ?', { n: checked.length }))
+    : confirm(TF('Ranger {n} carte(s) cochée(s) dans la catégorie « {c} » ?', { n: checked.length, c: v }));
+  if (!ok) return renderScanned();
+  const before = catCounts();
   checked.forEach((it) => (it.cat = v === '__clear' ? '' : v));
+  dropEmptiedCats(before);
   saveList(); renderScanned();
+});
+// état minimum : un seul choix pour toutes les cartes (et les prochaines). EX = EX, NM et MT acceptés.
+const condBadge = (k) => `<span class="cbadge c-${k}">${k}</span>`;
+const condBetter = (k) => CONDS.slice(0, CONDS.findIndex(([c]) => c === k) + 1).map(([c]) => c);
+function renderCondPick() {
+  const el = $('condPick'); if (!el) return;
+  const cur = settings.defaultCond || '';
+  const open = el.classList.contains('open');
+  el.innerHTML = `<button type="button" class="cp-btn" data-cpopen title="${esc(T('État minimum de toutes tes cartes (et des prochaines) : un état choisi accepte aussi les meilleurs.'))}">🛡 ${cur ? condBetter(cur).reverse().map(condBadge).join('') : `<span class="cp-all">${esc(T('Tous états'))}</span>`}<i>▾</i></button>
+    <div class="cp-menu" ${open ? '' : 'hidden'}>
+      <div class="cp-opt ${cur ? '' : 'on'}" data-cp=""><span class="cp-all">${esc(T('Tous états'))}</span></div>
+      ${CONDS.slice(0, 6).map(([k, l]) => `<div class="cp-opt ${cur === k ? 'on' : ''}" data-cp="${k}">${condBadge(k)}<span>${esc(TF('{c} et mieux', { c: T(l) }))}</span></div>`).join('')}
+    </div>`;
+}
+$('condPick').addEventListener('click', (e) => {
+  const el = $('condPick');
+  e.stopPropagation(); // sinon le clic « dehors » le referme tout de suite (le bouton vient d'être redessiné)
+  if (e.target.closest('[data-cpopen]')) { el.classList.toggle('open'); return renderCondPick(); }
+  const o = e.target.closest('[data-cp]'); if (!o) return;
+  settings.defaultCond = o.dataset.cp;
+  items().forEach((it) => { it.cond = settings.defaultCond; });
+  el.classList.remove('open');
+  saveSettings(); saveList(); renderScanned(); renderSettings();
+});
+document.addEventListener('click', (e) => { const el = $('condPick'); if (el && el.classList.contains('open') && !el.contains(e.target)) { el.classList.remove('open'); renderCondPick(); } });
+// supprimer les cartes cochées
+$('delSel').addEventListener('click', () => {
+  const checked = items().filter((it) => it.checked);
+  if (!checked.length) return banner(T('Coche d\'abord les cartes à supprimer.'));
+  if (!confirm(TF('Supprimer {n} carte(s) cochée(s) de ta liste ?', { n: checked.length }))) return;
+  const before = catCounts();
+  checked.forEach((it) => { delete list[it.id]; delete scans[it.id]; chrome.storage.local.remove('scan_' + it.id); });
+  dropEmptiedCats(before);
+  saveList(); renderAll();
 });
 // langue voulue en haut : s'applique à toutes les cartes
 $('topLangs').addEventListener('click', (e) => {
@@ -1230,11 +1818,14 @@ $('scanAll').addEventListener('click', () => bulkScan(items()));
 const rescanCartFailed = () => { const ids = cartFailedIds(); if (ids.length) { setCartRetry([...new Set([...cartRetryIds, ...ids])]); startScan(ids); } };
 $('scanFailed').addEventListener('click', rescanCartFailed);
 document.addEventListener('click', (e) => { if (e.target.closest('[data-rescanfailed]')) { switchView('scanned'); rescanCartFailed(); } });
+document.addEventListener('click', (e) => { if (e.target.closest('[data-cmcompare]')) runCompare(); });
 $('stopBtn').addEventListener('click', () => { job.queue = []; job.active = false; renderProgress(); $('progText').textContent = 'Arrêt…'; });
 $('clearAll').addEventListener('click', () => {
   if (!confirm('Effacer toutes les cartes et leurs scans ?')) return;
   chrome.storage.local.remove([...Object.keys(scans).map((id) => 'scan_' + id), 'cmPlan']);
+  const before = catCounts();
   list = {}; scans = {};
+  dropEmptiedCats(before);
   saveList(); renderAll();
 });
 
@@ -1246,7 +1837,7 @@ $('scanRows').addEventListener('change', (e) => {
   if (e.target.matches('[data-cond]')) it.cond = e.target.value;
   if (e.target.matches('[data-cat]')) {
     const v = e.target.value === '__new' ? newCategory() : e.target.value;
-    if (v !== null) it.cat = v;
+    if (v !== null) { const before = catCounts(); it.cat = v; dropEmptiedCats(before); }
   }
   saveList(); renderScanned();
 });
@@ -1263,8 +1854,10 @@ $('scanRows').addEventListener('click', (e) => {
   }
   if (e.target.closest('[data-rescan]')) return startScan([id]);
   if (e.target.closest('[data-rm]')) {
+    const before = catCounts();
     delete list[id]; delete scans[id];
     chrome.storage.local.remove('scan_' + id);
+    dropEmptiedCats(before);
     saveList(); renderAll();
   }
 });
@@ -1310,7 +1903,7 @@ $('v-settings').addEventListener('click', (e) => {
 });
 $('sellerScope').addEventListener('change', (e) => {
   const v = e.target.value;
-  if (v === 'all' || v === 'mine' || v === 'nocustoms') setSellerPreset(v);
+  if (v === 'all' || v === 'mine' || v === 'europe') setSellerPreset(v);
   else { switchView('settings'); $('sellerChips').scrollIntoView({ block: 'center' }); return; }
   saveSettings(); renderSettings(); renderScanned();
 });
@@ -1326,7 +1919,7 @@ $('sellerChips').addEventListener('click', (e) => {
 });
 $('allCountries').addEventListener('click', () => { setSellerPreset('all'); saveSettings(); renderSettings(); renderScanned(); });
 $('myCountryOnly').addEventListener('click', () => { setSellerPreset('mine'); saveSettings(); renderSettings(); renderScanned(); });
-$('noCustomsOnly').addEventListener('click', () => { setSellerPreset('nocustoms'); saveSettings(); renderSettings(); renderScanned(); });
+$('europeOnly').addEventListener('click', () => { setSellerPreset('europe'); saveSettings(); renderSettings(); renderScanned(); });
 $('applyDefaults').addEventListener('click', () => {
   items().forEach((it) => { it.langs = [...settings.defaultLangs]; it.cond = settings.defaultCond; });
   saveList(); renderScanned();
@@ -1469,19 +2062,9 @@ function cLabel(id, fr) { // nom du pays dans la langue de l'extension
   try { regionNames = regionNames && regionNames.lang === settings.uiLang ? regionNames : Object.assign(new Intl.DisplayNames([settings.uiLang], { type: 'region' }), { lang: settings.uiLang }); return regionNames.of(ID_ISO[id]) || fr; } catch { return fr; }
 }
 $('uiLang').addEventListener('change', (e) => {
-  settings.uiLang = e.target.value;
-  if (settings.countryFromLang) { settings.myCountry = countryForLang(settings.uiLang, settings.uiRegion); followCountry(); }
+  settings.uiLang = e.target.value; // la langue ne change plus ton pays de livraison
   saveSettings();
   location.reload(); // tout se réaffiche dans la nouvelle langue
-});
-$('countryFromLang').addEventListener('change', (e) => {
-  settings.countryFromLang = e.target.checked;
-  if (settings.countryFromLang) {
-    settings.myCountry = countryForLang(settings.uiLang, settings.uiRegion);
-    followCountry();
-    ensureShipTables().then(() => { renderSettings(); renderScanned(); });
-  }
-  saveSettings(); renderSettings(); renderScanned();
 });
 // ---------- Thème clair / sombre (auto = comme le navigateur) ----------
 function applyTheme() { document.documentElement.dataset.theme = 'dark'; } // un seul thème : sombre
@@ -1511,12 +2094,87 @@ function decorateBg() {
   });
 }
 
-chrome.storage.local.get('cmReqLog').then((d) => { reqLog = d.cmReqLog || []; const n = $('nReqLog'); if (n) n.textContent = reqLog.length; });
+chrome.storage.local.get('cmReqLog').then((d) => { reqLog = d.cmReqLog || []; const n0 = reqLog.length; pruneLog(); if (reqLog.length !== n0) chrome.storage.local.set({ cmReqLog: reqLog }); const n = $('nReqLog'); if (n) n.textContent = reqLog.length; });
 $('exportReqLog').addEventListener('click', exportReqLog);
 $('cpStop').addEventListener('click', () => $('stopBtn').click());
 $('clearReqLog').addEventListener('click', () => { reqLog = []; chrome.storage.local.set({ cmReqLog: [] }); $('nReqLog').textContent = 0; });
 
-loadAll().then(() => { applyTheme(); startI18n(); renderAll(); decorateBg(); });
+loadAll().then(() => { applyTheme(); startI18n(); renderAll(); decorateBg(); refreshEurope(); const vt = $('verTag'); if (vt) { vt.title = T('Voir les nouveautés') + ' · ' + BUILD; vt.classList.toggle('new', settings.seenVersion !== appVersion); } if (!settings.tutoDone && typeof showTuto === 'function') setTimeout(() => showTuto(0), 400); });
 
 // numéro de version affiché sous le logo (BETA tant que la version n'est pas validée)
-try { const m = (globalThis.browser || globalThis.chrome).runtime.getManifest(); const vt = document.getElementById('verTag'); if (vt) vt.textContent = 'v' + m.version + (BETA ? ' BETA' : ''); } catch (e) {}
+// ---------- Choix du site (pour l'instant : Cardmarket ; d'autres sites viendront) ----------
+const SITES = [
+  { id: 'cardmarket', name: 'Cardmarket', url: 'https://www.cardmarket.com', mark: 'CM',
+    games: ['Pokémon', 'Magic', 'Riftbound', 'One Piece', 'Yu-Gi-Oh!', 'Lorcana', 'Dragon Ball Super', 'Digimon', 'Flesh and Blood', 'Star Wars Unlimited', 'Cyberpunk', 'Gundam'] },
+];
+const siteOf = (id) => SITES.find((x) => x.id === id) || SITES[0];
+function toggleSiteMenu(force) {
+  let m = $('siteMenu');
+  const btn = $('sitePick');
+  if (!m) {
+    m = document.createElement('div');
+    m.id = 'siteMenu'; m.className = 'sitemenu'; m.hidden = true;
+    document.body.appendChild(m);
+    document.addEventListener('click', (e) => { if (!m.hidden && !m.contains(e.target) && e.target !== btn) toggleSiteMenu(false); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !m.hidden) toggleSiteMenu(false); });
+  }
+  const open = force ?? m.hidden;
+  if (open) {
+    const cur = settings.site || 'cardmarket';
+    m.innerHTML = `<div class="sm-title">${esc(T('Choix du site'))}</div>` + SITES.map((x) => `<div class="sm-site ${x.id === cur ? 'on' : ''}">
+        <span class="sm-mark">${esc(x.mark)}</span>
+        <div><b>${esc(x.name)}</b> ${x.id === cur ? '✓' : ''}<small>${esc(T('Jeux compatibles :'))} ${esc(x.games.join(', '))}… ${esc(T('et tous les jeux du site'))}</small>
+        <a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(TF('Ouvrir {s}', { s: x.name }))} ↗</a></div></div>`).join('')
+      + `<p class="sm-hint">${esc(T('D\'autres sites à proposer ? Passe sur le Discord et mets un message dans le salon suggestions.'))} <a href="https://discord.gg/Vm8vfqznh2" target="_blank" rel="noopener">Discord ↗</a></p>`;
+    const r = btn.getBoundingClientRect();
+    m.style.left = Math.round(r.left) + 'px'; m.style.top = Math.round(r.bottom + 6) + 'px';
+  }
+  m.hidden = !open;
+  btn.setAttribute('aria-expanded', String(open));
+}
+$('sitePick').addEventListener('click', (e) => { e.stopPropagation(); toggleSiteMenu(); });
+
+// ---------- Version : clic sur « v1.2 » = les nouveautés (point jaune tant que tu ne les as pas vues) ----------
+const WHATS_NEW = [
+  ['📥 Importer un deck', "Colle le lien d'un deck Riftbound (Piltover Archive ou Riftdecks) : les cartes sont trouvées sur Cardmarket et rangées dans une catégorie au nom du deck. Choisis « deck identique » ou « le moins cher possible » (avant → après, avec l'économie carte par carte)."],
+  ['⚖ Comparaison avec Cardmarket', "Nouvelle tuile « Tu économises (vs comparateur de prix du site) » : l'extension lance le Shopping Wizard de Cardmarket avec les mêmes cartes et filtres (liste de souhaits « TCGPRICEHUNTER »), puis compare le total."],
+  ['🛃 Sans frais de douane', "Remplace « Europe » : tous les pays d'où tu ne paies pas de douane vers chez toi, sans limite de prix. C'est le choix par défaut."],
+  ['Plus d\'offres par carte', "Sans « Montrer plus » (qui faisait bloquer Cardmarket, erreur 1015). Quand les prix sont serrés, l'extension charge plus de pages : ton pays de livraison découpé (particuliers, puis pros et power sellers, puis par langue), puis les autres pays. Si les offres suivantes ne peuvent plus faire baisser ton panier (plus chères que la moins chère + un envoi), elle s'arrête à 1 page : le scan reste rapide."],
+  ['Meilleur panier encore plus malin', "L'optimiseur essaie aussi de regrouper des commandes entières et d'échanger des cartes entre vendeurs, et explique quand tout prendre chez un seul vendeur coûterait plus cher."],
+  ['État minimum en un clic', "Menu avec les pastilles de couleur de Cardmarket : l'état choisi (et les meilleurs) s'applique à toutes tes cartes et aux prochaines. Nouveau bouton « Supprimer la sélection » en bas de la liste."],
+  ['Choix du site et nouveau logo', "Le bouton du site montre les jeux compatibles (Cardmarket pour l'instant), le site est affiché pendant le scan, et l'extension a un nouveau logo."],
+];
+let appVersion = '';
+function showWhatsNew() {
+  let back = $('whatsNew');
+  if (!back) {
+    back = document.createElement('div');
+    back.id = 'whatsNew'; back.className = 'wn-back';
+    back.addEventListener('click', (e) => { if (e.target === back || e.target.closest('[data-wnclose]')) back.hidden = true; });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !back.hidden) back.hidden = true; });
+    document.body.appendChild(back);
+  }
+  back.innerHTML = `<div class="wn panel" role="dialog" aria-modal="true" aria-labelledby="wnTitle">
+    <button class="wn-x" data-wnclose title="${esc(T('Fermer'))}">✕</button>
+    <h2 id="wnTitle">${esc(TF('Nouveautés de la version {v}', { v: appVersion }))}</h2>
+    <ul>${WHATS_NEW.map(([t, d]) => `<li><b>${esc(T(t))}</b><span>${esc(T(d))}</span></li>`).join('')}</ul>
+    <div class="wn-foot"><a href="https://github.com/Anastasiophrenelia/TCG-Price-Hunter/releases" target="_blank" rel="noopener">${esc(T('Toutes les versions sur GitHub'))} ↗</a>
+    <button class="btn primary" data-wnclose>${esc(T('Fermer'))}</button></div></div>`;
+  back.hidden = false;
+  back.querySelector('.wn .btn').focus();
+  if (settings.seenVersion !== appVersion) { settings.seenVersion = appVersion; saveSettings(); }
+  $('verTag').classList.remove('new');
+}
+const BUILD = 'b2511-0010'; // numéro de version interne : visible dans les erreurs, pour savoir quelle copie tourne
+try {
+  const m = (globalThis.browser || globalThis.chrome).runtime.getManifest();
+  appVersion = m.version;
+  const vt = document.getElementById('verTag');
+  if (vt) {
+    vt.textContent = 'v' + m.version + (BETA ? ' BETA' : '');
+    vt.dataset.build = BUILD; vt.setAttribute('aria-label', 'v' + m.version + ' (' + BUILD + ')');
+    vt.setAttribute('role', 'button'); vt.tabIndex = 0;
+    vt.addEventListener('click', showWhatsNew);
+    vt.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); showWhatsNew(); } });
+  }
+} catch (e) {}
