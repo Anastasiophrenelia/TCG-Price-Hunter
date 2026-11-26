@@ -124,6 +124,7 @@ function deckModal() {
       const t = e.target;
       if (t.name === 'dkmode') deckState.mode = t.value;
       if (t.id === 'dkSide') deckState.side = t.checked;
+      if (t.dataset.dkqty != null) { const x = deckResults[deckTab]?.rows[+t.dataset.dkqty]; if (x) { x.card.qty = Math.max(1, Math.min(99, Math.round(+t.value) || 1)); dkRerender(); } }
     });
     back.addEventListener('input', (e) => { if (e.target.id === 'dkUrl') deckState.url = e.target.value; });
     document.body.appendChild(back);
@@ -164,6 +165,14 @@ async function onDeckClick(e) {
   if (e.target.closest('[data-dkback]')) return showDeckImport();
   if (e.target.closest('[data-dkadd]')) return addDeckToList();
   if (e.target.closest('[data-dkstop]')) { if (job.kind === 'deck') job.active = false; }
+  const kp = e.target.closest('[data-dkkeep]');
+  if (kp) {
+    const x = deckResults[deckTab]?.rows[+kp.dataset.dkkeep];
+    if (x) { x.keep = kp.checked; dkRerender(); }
+    return;
+  }
+  const dl = e.target.closest('[data-dkdel]');
+  if (dl) { const r = deckResults[deckTab]; if (r) { r.rows.splice(+dl.dataset.dkdel, 1); dkRerender(); } return; }
   const tb = e.target.closest('[data-dktab]');
   if (tb) { deckTab = +tb.dataset.dktab; showDeckResult(); }
 }
@@ -288,24 +297,29 @@ async function startDeckImport() {
   showDeckResult();
 }
 let deckResults = [], deckTab = 0, deckUnread = [];
+// version retenue : la moins chère, sauf si l'utilisateur garde la version d'origine pour cette carte
+const dkUse = (x) => (x.keep && x.before ? x.before : x.after);
+function dkRerender() { const sc = document.querySelector('#deckModal .dk-table')?.scrollTop || 0; showDeckResult(); const t = document.querySelector('#deckModal .dk-table'); if (t) t.scrollTop = sc; }
 
 function showDeckResult() {
   const r = deckResults[deckTab], back = deckModal();
   if (!r) return;
   const cheap = r.mode === 'cheap';
-  const total = (key) => r.rows.reduce((a, x) => a + (x[key] && isFinite(x[key].price) ? x[key].price * x.card.qty : 0), 0);
+  const sum = (get) => r.rows.reduce((a, x) => { const p = get(x); return a + (p && isFinite(p.price) ? p.price * x.card.qty : 0); }, 0);
   const nCards = r.rows.reduce((a, x) => a + x.card.qty, 0);
   const img = (p) => p && p.img ? `<img class="zoomable" src="${esc(p.img)}" alt="${esc(p.name || '')}" title="${esc(T('Cliquer pour agrandir'))}" loading="lazy">` : '<span class="noimg">?</span>';
   const pr = (p) => p && isFinite(p.price) ? euro(p.price) : '—';
-  const line = (x) => {
-    const changed = cheap && x.before !== x.after;
-    const save = changed && x.before && isFinite(x.before.price) ? (x.before.price - x.after.price) * x.card.qty : 0;
-    return `<tr class="${changed ? 'chg' : ''}"><td class="q">${x.card.qty}×</td>
-      ${cheap ? `<td class="im">${img(x.before)}</td><td class="ar">${changed ? '→' : ''}</td>` : ''}<td class="im">${img(x.after)}</td>
-      <td class="nm"><b>${esc(x.after.name)}</b><i>${esc([x.after.set, x.after.num && '#' + x.after.num].filter(Boolean).join(' '))}${changed && x.before ? ` · ${esc(T('au lieu de'))} ${esc(x.before.set)} #${esc(x.before.num)}` : ''}</i></td>
-      <td class="pr">${cheap && changed ? `<s>${pr(x.before)}</s> ` : ''}${pr(x.after)}${save > 0.004 ? `<em>−${euro(save)}</em>` : ''}</td></tr>`;
+  const line = (x, i) => {
+    const alt = cheap && x.before && x.before !== x.after; // une version moins chère existe
+    const use = dkUse(x), changed = alt && !x.keep;
+    const save = changed && isFinite(x.before.price) ? (x.before.price - x.after.price) * x.card.qty : 0;
+    const keep = alt ? `<label class="dk-keep" title="${esc(T('Garder la version d\'origine du deck pour cette carte'))}"><input type="checkbox" data-dkkeep="${i}" ${x.keep ? 'checked' : ''}> ${esc(T('Garder l\'original'))}</label>` : '';
+    return `<tr class="${changed ? 'chg' : ''}${alt && x.keep ? ' kept' : ''}"><td class="q"><input type="number" class="dk-qty" min="1" max="99" value="${x.card.qty}" data-dkqty="${i}" title="${esc(T('Nombre d\'exemplaires'))}"></td>
+      ${cheap ? `<td class="im">${img(changed ? x.before : use)}</td><td class="ar">${changed ? '→' : ''}</td><td class="im">${changed ? img(x.after) : ''}</td>` : `<td class="im">${img(use)}</td>`}
+      <td class="nm"><b>${esc(use.name)}</b><i>${esc([use.set, use.num && '#' + use.num].filter(Boolean).join(' '))}${changed ? ` · ${esc(T('au lieu de'))} ${esc(x.before.set)} #${esc(x.before.num)}` : ''}</i></td>
+      ${cheap ? `<td class="kp">${keep}</td>` : ''}<td class="pr">${changed ? `<s>${pr(x.before)}</s> ` : ''}${pr(use)}${save > 0.004 ? `<em>−${euro(save)}</em>` : ''}</td><td class="dl"><button class="dk-del" data-dkdel="${i}" title="${esc(T('Retirer cette carte'))}">✕</button></td></tr>`;
   };
-  const before = total('before'), after = total('after');
+  const before = sum((x) => x.before), after = sum(dkUse);
   const tabs = deckResults.length > 1 ? `<div class="chips dk-tabs">${deckResults.map((d, i) => `<span class="chip ${i === deckTab ? 'on' : ''}" data-dktab="${i}">${esc(d.name)}${d.missing.length ? ' ⚠' : ''}</span>`).join('')}</div>` : '';
   back.innerHTML = `<div class="wn panel dk wide" role="dialog" aria-modal="true">
     <button class="wn-x" data-dkclose title="${esc(T('Fermer'))}">✕</button>
@@ -316,7 +330,8 @@ function showDeckResult() {
     ${cheap ? `<div class="dk-sum"><span>${esc(T('Avant'))} <b>${euro(before)}</b></span><span>→</span><span>${esc(T('Après'))} <b>${euro(after)}</b></span><span class="ok">${esc(T('Économie'))} <b>${euro(Math.max(0, before - after))}</b></span></div>` : ''}
     ${r.missing.length ? `<div class="dk-miss"><b>${esc(TF('{n} carte(s) introuvable(s) sur Cardmarket :', { n: r.missing.length }))}</b> ${esc(r.missing.map((c) => `${c.qty}× ${c.name}${c.set ? ` (${c.set} ${c.num})` : ''}`).join(', '))}
       <br>${esc(T('Signale-le sur le Discord pour qu\'on corrige ça.'))} <a href="${DISCORD_URL}" target="_blank" rel="noopener">Discord ↗</a></div>` : ''}
-    <div class="dk-table"><table>${r.rows.map(line).join('')}</table></div>
+    <div class="dk-table">${r.rows.length ? `<table>${r.rows.map(line).join('')}</table>` : `<p class="dk-empty">${esc(T('Aucune carte dans ce deck.'))}</p>`}</div>
+    ${cheap && r.rows.some((x) => x.before && x.before !== x.after) ? `<p class="dk-hint">${esc(T('Coche « Garder l\'original » sur une carte pour garder sa version du deck au lieu de la moins chère.'))}</p>` : ''}
     <div class="wn-foot"><button class="btn ghost" data-dkback>← ${esc(T('Retour'))}</button>
       <button class="btn primary" data-dkadd ${deckResults.some((d) => d.rows.length) ? '' : 'disabled'}>${esc(deckResults.length > 1 ? TF('Ajouter les {n} decks à ma liste (une catégorie par deck)', { n: deckResults.length }) : TF('Ajouter à ma liste (catégorie « {c} »)', { c: r.name }))}</button></div>
   </div>`;
@@ -332,7 +347,7 @@ function addDeckToList() {
     if (!cats.includes(cat)) { cats.push(cat); saveCats(); }
     names.push(cat);
     const qtyBy = new Map();
-    for (const x of r.rows) qtyBy.set(x.after.id, { p: x.after, qty: (qtyBy.get(x.after.id)?.qty || 0) + x.card.qty });
+    for (const x of r.rows) { const p = dkUse(x); qtyBy.set(p.id, { p, qty: (qtyBy.get(p.id)?.qty || 0) + x.card.qty }); }
     for (const { p, qty } of qtyBy.values()) {
       const old = list[p.id];
       if (old) { old.qty = (+old.qty || 0) + qty; old.checked = true; if (!old.cat) old.cat = cat; merged++; continue; }

@@ -13,7 +13,7 @@
 <p align="center">
   <a href="https://discord.gg/Vm8vfqznh2"><img src="https://img.shields.io/badge/Discord-join-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord"></a>
   <a href="https://ko-fi.com/anastasiophrenelia"><img src="https://img.shields.io/badge/Ko--fi-support%20the%20project-FF5E5B?style=flat-square&logo=kofi&logoColor=white" alt="Ko-fi"></a>
-  <img src="https://img.shields.io/badge/version-1.33-1b63e0?style=flat-square" alt="Version 1.33">
+  <img src="https://img.shields.io/badge/version-1.34-1b63e0?style=flat-square" alt="Version 1.34">
   <img src="https://img.shields.io/badge/license-all%20rights%20reserved-555?style=flat-square" alt="License">
 </p>
 
@@ -54,7 +54,7 @@ Works with every card sold on Cardmarket: Riftbound, Pokémon, Magic, One Piece,
 - **Interactive tutorial** on first launch (replay it from Settings).
 - Default sellers: countries with **no customs fees** to you.
 
-*1.31: a ✕ to skip the whole tutorial. 1.32: with "Always tracked letter" on, the Cardmarket comparison also counts tracked shipping, so both baskets follow the same rules; "Min. sales" filter removed; on Firefox, a button to allow access to Cardmarket if it's missing. 1.33: on Cardmarket's Shopping Wizard results page, the extension adds "Shipping as tracked letter" and "Total with tracked letters" (each seller's country and price are checked against the official rates), and the comparison reads that total.*
+*1.31: a ✕ to skip the whole tutorial. 1.32: with "Always tracked letter" on, the Cardmarket comparison also counts tracked shipping, so both baskets follow the same rules; "Min. sales" filter removed; on Firefox, a button to allow access to Cardmarket if it's missing. 1.33: on Cardmarket's Shopping Wizard results page, the extension adds "Shipping as tracked letter" and "Total with tracked letters" (each seller's country and price are checked against the official rates), and the comparison reads that total. 1.34: in deck import (cheapest mode), tick "Keep original" on any card to keep the deck's version, change the number of copies or remove a card before adding the deck to your list.*
 
 ## 📦 Install on Chrome (from GitHub)
 
