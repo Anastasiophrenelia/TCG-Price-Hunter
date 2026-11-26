@@ -728,3 +728,10 @@ html[data-theme=dark] #tuto .tt-bubble::before { border: 0; }
 #tuto .tt-warn b { color: #dc2626; }
 #tuto .tt-foot { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
 #tuto .tt-count { margin-right: auto; font-size: 12px; color: var(--mut); }
+
+/* Meilleur panier : choix de la langue sans re-scan */
+.panel.blang { padding: 12px 14px; }
+.blang-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.blang-row .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.blang .chip { cursor: pointer; }
+.blang .hint { margin: 8px 0 0; font-size: 12px; color: var(--mut); }

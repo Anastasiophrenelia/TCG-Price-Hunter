@@ -54,7 +54,7 @@ Works with every card sold on Cardmarket: Riftbound, Pokémon, Magic, One Piece,
 - **Interactive tutorial** on first launch (replay it from Settings).
 - Default sellers: countries with **no customs fees** to you.
 
-*1.31: a ✕ to skip the whole tutorial. 1.32: with "Always tracked letter" on, the Cardmarket comparison also counts tracked shipping, so both baskets follow the same rules; "Min. sales" filter removed; on Firefox, a button to allow access to Cardmarket if it's missing. 1.33: on Cardmarket's Shopping Wizard results page, the extension adds "Shipping as tracked letter" and "Total with tracked letters" (each seller's country and price are checked against the official rates), and the comparison reads that total. 1.34: in deck import (cheapest mode), tick "Keep original" on any card to keep the deck's version, change the number of copies or remove a card before adding the deck to your list.*
+*1.31: a ✕ to skip the whole tutorial. 1.32: with "Always tracked letter" on, the Cardmarket comparison also counts tracked shipping, so both baskets follow the same rules; "Min. sales" filter removed; on Firefox, a button to allow access to Cardmarket if it's missing. 1.33: on Cardmarket's Shopping Wizard results page, the extension adds "Shipping as tracked letter" and "Total with tracked letters" (each seller's country and price are checked against the official rates), and the comparison reads that total. 1.34: in deck import (cheapest mode), tick "Keep original" on any card to keep the deck's version, change the number of copies or remove a card before adding the deck to your list; in Best basket, switch the card language without rescanning (among the languages already scanned).*
 
 ## 📦 Install on Chrome (from GitHub)
 

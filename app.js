@@ -157,6 +157,8 @@ const langOf = (o) => {
 };
 const cardLangs = (it) => (Array.isArray(it.langs) ? it.langs : settings.defaultLangs || []);
 const cardCond = (it) => (it.cond != null ? it.cond : settings.defaultCond || '');
+// langue choisie dans « Meilleur panier » (sans re-scan) : remplace celle de chaque carte pour le calcul et la comparaison
+const effLangs = (it) => (Array.isArray(settings.bestLangs) && settings.bestLangs.length ? settings.bestLangs : cardLangs(it));
 const offerKey = (id, o) => [id, o.seller, o.price, o.cond, o.lang].join('|');
 // le vendeur est-il dans les pays choisis, et peut-il t'envoyer la carte ?
 const inScope = (o) => {
@@ -168,10 +170,10 @@ const inScope = (o) => {
 const inFrance = inScope; // (ancien nom)
 
 // offres qui passent TOUS les filtres (langue, état, vendeur, bloqués, ignorés)
-function filteredOffers(it) {
+function filteredOffers(it, langs = cardLangs(it)) {
   const s = scans[it.id];
   if (!s) return [];
-  const langs = cardLangs(it), minC = cardCond(it);
+  const minC = cardCond(it);
   return s.offers.filter((o) =>
     inFrance(o) &&
     (!langs.length || langs.includes(langOf(o))) &&
@@ -932,7 +934,7 @@ async function addToCart(orders, preset, mode) {
 // 1 liste de souhaits par jeu « TCGPRICEHUNTER <JEU> » : créée si besoin, vidée, remplie avec tes cartes (quantité, langues, état),
 // puis le Shopping Wizard « Réduire le prix » est lancé dans l'onglet Cardmarket, et on lit son total.
 let cmCompare = null; // { sig, date, total, wanted, found, results: [{ game, url, total, value, ship, orders, wanted, found }] }
-const compareSig = (lines) => JSON.stringify([lines.map((l) => [l.id, l.qty, cardCond(list[l.id] || {}), cardLangs(list[l.id] || {})]).sort(), [...settings.sellerCountries].sort(), +settings.minRating || 0]);
+const compareSig = (lines) => JSON.stringify([lines.map((l) => [l.id, l.qty, cardCond(list[l.id] || {}), effLangs(list[l.id] || {})]).sort(), [...settings.sellerCountries].sort(), +settings.minRating || 0]);
 const wantsListName = (game) => ('TCGPRICEHUNTER ' + String(game).toUpperCase().replace(/[^A-Z0-9]/g, '')).slice(0, 30);
 const parseEuro = (s) => { const m = String(s || '').replace(/\s/g, '').match(/-?[\d.]*\d+(?:,\d+)?/); return m ? parseFloat(m[0].replace(/\./g, '').replace(',', '.')) : NaN; };
 
@@ -1045,7 +1047,7 @@ async function runCompare() {
         const idProduct = it.idProduct || it.id;
         const body = { __cmtkn: token, idProduct, idWantsList: idList, amount: String(it.qty || 1), minCondition: String(COND_RANK[cardCond(it)] || 7), 'extra[isFoil]': '0', wishPrice: '' };
         if (it.idMetacard) body.idMetacard = it.idMetacard;
-        cardLangs(it).map((l) => CM_LANG_ID[l]).filter(Boolean).forEach((n) => { body[`idLanguage[${n}]`] = String(n); });
+        effLangs(it).map((l) => CM_LANG_ID[l]).filter(Boolean).forEach((n) => { body[`idLanguage[${n}]`] = String(n); });
         for (let tries = 0; ; tries++) {
           const res = await request(`${base}/AjaxAction/Wantslist_AddWantByProduct`, body);
           if (res.login) throw new Error(T('tu n\'es pas connecté à Cardmarket'));
@@ -1513,7 +1515,7 @@ const shipTableFor = (country) => {
 function compute() {
   const lines = items()
     .filter((it) => it.checked && scans[it.id])
-    .map((it) => ({ id: it.id, name: it.name, sub: it.sub, game: it.game, url: it.url, qty: it.qty, offers: filteredOffers(it) }));
+    .map((it) => ({ id: it.id, name: it.name, sub: it.sub, game: it.game, url: it.url, qty: it.qty, offers: filteredOffers(it, effLangs(it)) }));
   lastResult = lines.length ? { r: Optimizer.optimize(lines, { ...settings, shipTableFor, customsFor }), lines, date: Date.now() } : null;
   // on garde le plan pour entourer en vert les bons vendeurs sur les pages Cardmarket
   if (lastResult) {
@@ -1527,6 +1529,21 @@ function sellerUrl(seller, game) {
   return `${ORIGIN}/fr/${encodeURIComponent(game || 'Riftbound')}/Users/${encodeURIComponent(seller)}`;
 }
 
+// choix de la langue dans « Meilleur panier » : seulement parmi les langues déjà présentes dans les scans
+function bestLangBar() {
+  const its = items().filter((it) => it.checked && scans[it.id]);
+  if (!its.length) return '';
+  const nCards = {};
+  its.forEach((it) => { new Set(scans[it.id].offers.filter(inScope).map(langOf).filter(Boolean)).forEach((l) => { nCards[l] = (nCards[l] || 0) + 1; }); });
+  const chosen = Array.isArray(settings.bestLangs) ? settings.bestLangs : [];
+  const names = LANGS.map(([n]) => n).filter((n) => nCards[n] || chosen.includes(n));
+  if (!names.length) return '';
+  return `<div class="panel blang"><div class="blang-row"><b>${esc(T('Langue des cartes'))}</b>
+    <div class="chips">${names.map((n) => `<span class="chip ${chosen.includes(n) ? 'on' : ''}" data-blang="${esc(n)}" title="${esc(TF('{a} carte(s) sur {b} ont des offres dans cette langue', { a: nCards[n] || 0, b: its.length }))}">${esc(LANG_CODE[n] || n)} <i>${nCards[n] || 0}/${its.length}</i></span>`).join('')}
+    <span class="chip ${chosen.length ? '' : 'on'}" data-blang="" title="${esc(T('Utilise la langue choisie pour chaque carte dans ta liste'))}">${esc(T('Comme dans ma liste'))}</span></div></div>
+    <p class="hint">${esc(T('Change la langue sans re-scanner : seules les langues déjà scannées sont proposées. Pour en avoir d\'autres, mets « toutes langues » sur tes cartes et re-scanne.'))}</p></div>`;
+}
+
 function renderBest() {
   if (!lastResult) {
     $('best').innerHTML = `<div class="empty">Scanne des cartes d'abord, puis clique <b>Calculer le meilleur panier</b>.</div>`;
@@ -1538,6 +1555,8 @@ function renderBest() {
   const nAvail = n - r.unavailable.length;
   const S = r.settings;
   let h = '';
+
+  h += bestLangBar();
 
   // avertissements
   const warns = [];
@@ -1904,6 +1923,13 @@ $('scanRows').addEventListener('click', (e) => {
 });
 
 $('best').addEventListener('click', (e) => {
+  const bl = e.target.closest('[data-blang]');
+  if (bl) {
+    const l = bl.dataset.blang, cur = Array.isArray(settings.bestLangs) ? settings.bestLangs : [];
+    settings.bestLangs = !l ? [] : cur.includes(l) ? cur.filter((x) => x !== l) : [...cur, l];
+    saveSettings(); logAction('Langue du meilleur panier : ' + (settings.bestLangs.join(', ') || 'comme dans la liste'));
+    return refreshBest();
+  }
   const c = e.target.closest('[data-cart]');
   if (c && lastResult) {
     e.stopPropagation();
@@ -2206,7 +2232,7 @@ function showWhatsNew() {
   if (settings.seenVersion !== appVersion) { settings.seenVersion = appVersion; saveSettings(); }
   $('verTag').classList.remove('new');
 }
-const BUILD = 'b2611-1958'; // numéro de version interne : visible dans les erreurs, pour savoir quelle copie tourne
+const BUILD = 'b2611-2010'; // numéro de version interne : visible dans les erreurs, pour savoir quelle copie tourne
 try {
   const m = (globalThis.browser || globalThis.chrome).runtime.getManifest();
   appVersion = m.version;
