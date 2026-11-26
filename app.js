@@ -159,6 +159,15 @@ const cardLangs = (it) => (Array.isArray(it.langs) ? it.langs : settings.default
 const cardCond = (it) => (it.cond != null ? it.cond : settings.defaultCond || '');
 // langue choisie dans « Meilleur panier » (sans re-scan) : remplace celle de chaque carte pour le calcul et la comparaison
 const effLangs = (it) => (Array.isArray(settings.bestLangs) && settings.bestLangs.length ? settings.bestLangs : cardLangs(it));
+// scan complémentaire pour une langue choisie dans « Meilleur panier » : les offres sont gardées à part (s.extra), sans toucher au scan normal
+let scanLangOverride = null;
+const langKey = (langs) => langs.map((l) => CM_LANG_ID[l]).filter(Boolean).sort((a, b) => a - b).join(',');
+// le scan de cette carte peut-il avoir raté des offres dans ces langues ? (filtre de langue différent ET offres coupées)
+const needsLangTopUp = (it, langs) => {
+  const s = scans[it.id], k = langKey(langs);
+  if (!s || !k || !s.partial || (s.extra && s.extra[k])) return false;
+  return (new URLSearchParams(s.q || '').get('language') || '') !== k;
+};
 const offerKey = (id, o) => [id, o.seller, o.price, o.cond, o.lang].join('|');
 // le vendeur est-il dans les pays choisis, et peut-il t'envoyer la carte ?
 const inScope = (o) => {
@@ -174,7 +183,10 @@ function filteredOffers(it, langs = cardLangs(it)) {
   const s = scans[it.id];
   if (!s) return [];
   const minC = cardCond(it);
-  return s.offers.filter((o) =>
+  let all = s.offers;
+  const ex = s.extra && langs.length && s.extra[langKey(langs)];
+  if (ex) { const seen = new Set(all.map(artKey)); all = all.concat(ex.offers.filter((o) => !seen.has(artKey(o)))); }
+  return all.filter((o) =>
     inFrance(o) &&
     (!langs.length || langs.includes(langOf(o))) &&
     (!minC || (COND_RANK[o.cond] || 9) <= COND_RANK[minC]) &&
@@ -212,7 +224,7 @@ function scanQuery(it) {
   if (sc.length && sc.length < COUNTRIES.length) q.set('sellerCountry', [...sc].map(Number).sort((a, b) => a - b).join(','));
   const rep = +settings.minRating || 0; // 2 = Moyen et + … 5 = Extraordinaire  ->  Cardmarket : 4 … 1
   if (rep >= 2) q.set('sellerReputation', 6 - rep);
-  const langs = cardLangs(it).map((l) => CM_LANG_ID[l]).filter(Boolean).sort((a, b) => a - b);
+  const langs = (scanLangOverride || cardLangs(it)).map((l) => CM_LANG_ID[l]).filter(Boolean).sort((a, b) => a - b);
   if (langs.length) q.set('language', langs.join(','));
   const c = cardCond(it);
   if (c && COND_RANK[c] > 1) q.set('minCondition', COND_RANK[c]);
@@ -614,7 +626,7 @@ async function scanMore(st) {
     if (!sl.t) kids = ['0', '1,2'].map((t) => ({ c: sl.c, t }));
     else {
       const it = list[st.id] || {};
-      const chosen = cardLangs(it).map((l) => CM_LANG_ID[l]).filter(Boolean);
+      const chosen = (scanLangOverride || cardLangs(it)).map((l) => CM_LANG_ID[l]).filter(Boolean);
       const counts = {};
       if (chosen.length !== 1) got.forEach((o) => { const n = CM_LANG_ID[o.lang]; if (n && (!chosen.length || chosen.includes(n))) counts[n] = (counts[n] || 0) + 1; });
       const langs = Object.keys(counts).sort((a, b) => counts[b] - counts[a]).slice(0, 3);
@@ -627,6 +639,12 @@ async function scanMore(st) {
   return st.slices.length > 0 && st.left > 0;
 }
 async function finishCard(st, partial) {
+  if (scanLangOverride && scans[st.id]) { // scan complémentaire de langue : rangé à part, le scan normal ne change pas
+    const s = scans[st.id];
+    s.extra = { ...(s.extra || {}), [langKey(scanLangOverride)]: { date: Date.now(), offers: st.offers } };
+    await chrome.storage.local.set({ ['scan_' + st.id]: s });
+    return 'done';
+  }
   scans[st.id] = { date: Date.now(), offers: st.offers, url: list[st.id]?.url, partial, loggedOut: false, q: scanQuery(list[st.id]) };
   await chrome.storage.local.set({ ['scan_' + st.id]: scans[st.id] });
   return 'done';
@@ -636,6 +654,7 @@ async function startScan(ids) {
   ids = ids.filter((id) => list[id]);
   if (!ids.length) return banner('Coche au moins une carte.');
   banner(null);
+  if (job.active && scanLangOverride) return banner(T('Attends la fin de la recherche des offres dans la langue choisie, puis relance.'));
   if (job.active) { // déjà en cours : on ajoute à la file
     ids.forEach((id) => { if (!job.queue.includes(id) && !job.running.has(id)) { job.queue.push(id); job.total++; } });
     return renderProgress();
@@ -707,8 +726,11 @@ function endScan(stopped = false) {
   $('stopBtn').hidden = true;
   $('barFill').style.width = '100%';
   saveSettings(); // garde la durée moyenne par carte pour les prochaines estimations
+  const wasTopUp = !!scanLangOverride;
+  scanLangOverride = null;
   renderAll();
   decorateBg();
+  if (wasTopUp && !$('v-best').hidden) refreshBest(); // offres de la langue choisie chargées : on recalcule
 }
 
 // temps restant estimé
@@ -1516,7 +1538,7 @@ function compute() {
   const lines = items()
     .filter((it) => it.checked && scans[it.id])
     .map((it) => ({ id: it.id, name: it.name, sub: it.sub, game: it.game, url: it.url, qty: it.qty, offers: filteredOffers(it, effLangs(it)) }));
-  lastResult = lines.length ? { r: Optimizer.optimize(lines, { ...settings, shipTableFor, customsFor }), lines, date: Date.now() } : null;
+  lastResult = lines.length ? { r: Optimizer.optimize(lines, { ...settings, shipTableFor, customsFor, deep: true, searchMs: 12000 }), lines, date: Date.now() } : null;
   // on garde le plan pour entourer en vert les bons vendeurs sur les pages Cardmarket
   if (lastResult) {
     const cards = {};
@@ -1541,7 +1563,7 @@ function bestLangBar() {
   return `<div class="panel blang"><div class="blang-row"><b>${esc(T('Langue des cartes'))}</b>
     <div class="chips">${names.map((n) => `<span class="chip ${chosen.includes(n) ? 'on' : ''}" data-blang="${esc(n)}" title="${esc(TF('{a} carte(s) sur {b} ont des offres dans cette langue', { a: nCards[n] || 0, b: its.length }))}">${esc(LANG_CODE[n] || n)} <i>${nCards[n] || 0}/${its.length}</i></span>`).join('')}
     <span class="chip ${chosen.length ? '' : 'on'}" data-blang="" title="${esc(T('Utilise la langue choisie pour chaque carte dans ta liste'))}">${esc(T('Comme dans ma liste'))}</span></div></div>
-    <p class="hint">${esc(T('Change la langue sans re-scanner : seules les langues déjà scannées sont proposées. Pour en avoir d\'autres, mets « toutes langues » sur tes cartes et re-scanne.'))}</p></div>`;
+    <p class="hint">${esc(T('Change la langue sans tout re-scanner : si une carte a pu manquer des offres dans cette langue, seules ces cartes sont re-scannées dans cette langue (quelques secondes), pour avoir vraiment le meilleur prix.'))}</p></div>`;
 }
 
 function renderBest() {
@@ -1734,7 +1756,7 @@ async function refreshBest() {
   try {
     do {
       bestAgain = false;
-      busy(true, T('Calcul du meilleur panier…'));
+      busy(true, T('Calcul du meilleur panier (recherche approfondie, quelques secondes)…'));
       await nextPaint(); // laisse le temps d'afficher le chargement avant de calculer
       await ensureShipTables();
       await nextPaint();
@@ -1928,6 +1950,16 @@ $('best').addEventListener('click', (e) => {
     const l = bl.dataset.blang, cur = Array.isArray(settings.bestLangs) ? settings.bestLangs : [];
     settings.bestLangs = !l ? [] : cur.includes(l) ? cur.filter((x) => x !== l) : [...cur, l];
     saveSettings(); logAction('Langue du meilleur panier : ' + (settings.bestLangs.join(', ') || 'comme dans la liste'));
+    // pour être sûr d'avoir le meilleur prix : les cartes dont le scan a pu rater des offres dans cette langue
+    // sont re-scannées seulement pour cette langue (quelques secondes), puis le panier est recalculé
+    const L = settings.bestLangs;
+    const todo = L.length ? items().filter((it) => it.checked && needsLangTopUp(it, L)).map((it) => it.id) : [];
+    if (todo.length && !job.active) {
+      scanLangOverride = [...L];
+      logAction(`Scan complémentaire en ${L.join(', ')} : ${todo.length} carte(s)`);
+      startScan(todo);
+      return banner(TF('Recherche des offres en {l} pour {n} carte(s), pour être sûr du meilleur prix…', { l: L.map((x) => LANG_CODE[x] || x).join('/'), n: todo.length }));
+    }
     return refreshBest();
   }
   const c = e.target.closest('[data-cart]');
@@ -2232,7 +2264,7 @@ function showWhatsNew() {
   if (settings.seenVersion !== appVersion) { settings.seenVersion = appVersion; saveSettings(); }
   $('verTag').classList.remove('new');
 }
-const BUILD = 'b2611-2010'; // numéro de version interne : visible dans les erreurs, pour savoir quelle copie tourne
+const BUILD = 'b2611-2030'; // numéro de version interne : visible dans les erreurs, pour savoir quelle copie tourne
 try {
   const m = (globalThis.browser || globalThis.chrome).runtime.getManifest();
   appVersion = m.version;

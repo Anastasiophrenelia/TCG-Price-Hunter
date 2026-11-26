@@ -298,7 +298,9 @@
     // Départs suivants : on part des vendeurs qui ont le plus de cartes
     const coverage = new Map();
     P.L.forEach((l) => l.options.forEach((o) => { if (!o.multi) coverage.set(o.seller, (coverage.get(o.seller) || 0) + 1); }));
-    const topSellers = [...coverage.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25).map((e) => e[0]);
+    const deep = !!S.deep; // recherche approfondie : plus lente (quelques secondes de plus) mais trouve encore mieux
+    const budget = deep ? (+S.searchMs || 12000) : 6000;
+    const topSellers = [...coverage.entries()].sort((a, b) => b[1] - a[1]).slice(0, deep ? 60 : 25).map((e) => e[0]);
     const pref = (l, i, s) => l.options.find((o) => !o.multi && o.seller === s) || l.options.find((o) => o.sellers.includes(s)) || base[i];
 
     const starts = [base.slice()];
@@ -307,13 +309,48 @@
     let best = null;
     const tStart = Date.now();
     for (const st of starts) {
-      if (best && Date.now() - tStart > 6000) break; // garde-fou : jamais plus de quelques secondes
+      if (best && Date.now() - tStart > (deep ? budget / 2 : 6000)) break; // garde-fou : jamais plus de quelques secondes
       const a = improve(P, st, S);
       const ev = evaluate(P, a, S);
       if (!best || ev.total < best.ev.total - 1e-9) best = { assign: a.slice(), ev };
     }
     // dernier passage sur la meilleure solution, avec les échanges entre commandes
     { const a = improve(P, best.assign.slice(), S, true); const ev = evaluate(P, a, S); if (ev.total < best.ev.total - 1e-9) best = { assign: a.slice(), ev }; }
+
+    if (deep) {
+      // petite liste : on essaie TOUTES les combinaisons (résultat exact)
+      const sizes = P.L.map((l) => Math.max(1, l.options.length));
+      const combos = sizes.reduce((t, n) => (t > 1e7 ? t : t * n), 1);
+      if (combos <= 60000) {
+        const a = base.slice(), idx = P.L.map(() => 0);
+        for (let k = 0; k < combos; k++) {
+          P.L.forEach((l, i) => { a[i] = l.options.length ? l.options[idx[i]] : base[i]; });
+          const ev = evaluate(P, a, S);
+          if (ev.total < best.ev.total - 1e-9) best = { assign: a.slice(), ev };
+          for (let i = 0; i < idx.length; i++) { if (++idx[i] < sizes[i]) break; idx[i] = 0; }
+        }
+      } else {
+        // grande liste : on secoue la meilleure solution (quelques cartes changent de vendeur) puis on l'améliore,
+        // tant que ça trouve mieux. Hasard reproductible : le même calcul donne toujours le même panier.
+        let seed = 1234567;
+        const rnd = () => { seed |= 0; seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+        const mov = P.L.map((l, i) => i).filter((i) => P.L[i].options.length > 1);
+        let stale = 0;
+        while (mov.length && Date.now() - tStart < budget && stale < 400) {
+          const a = best.assign.slice();
+          if (rnd() < 0.35) { // ferme une commande au hasard : toutes ses cartes partent ailleurs
+            const sellers = [...new Set(a.filter(Boolean).flatMap((o) => o.sellers))];
+            const s0 = sellers[Math.floor(rnd() * sellers.length)];
+            P.L.forEach((l, i) => { if (a[i] && a[i].sellers.includes(s0)) { const alt = l.options.filter((o) => !o.sellers.includes(s0)); if (alt.length) a[i] = alt[Math.floor(rnd() * Math.min(alt.length, 6))]; } });
+          } else {
+            const k = 1 + Math.floor(rnd() * Math.max(2, Math.ceil(mov.length * 0.2)));
+            for (let j = 0; j < k; j++) { const i = mov[Math.floor(rnd() * mov.length)]; const o = P.L[i].options; a[i] = o[Math.floor(rnd() * Math.min(o.length, 8))]; }
+          }
+          const b2 = improve(P, a, S, true), ev = evaluate(P, b2, S);
+          if (ev.total < best.ev.total - 1e-9) { best = { assign: b2.slice(), ev }; stale = 0; } else stale++;
+        }
+      }
+    }
 
     // Construction des commandes (une carte répartie apparaît chez chacun de ses vendeurs)
     const orders = new Map();
