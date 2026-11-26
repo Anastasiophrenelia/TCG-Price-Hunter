@@ -85,6 +85,7 @@ function tutoEls() {
     root.addEventListener('click', async (e) => {
       const cp = e.target.closest('[data-ttcopy]');
       if (cp) { try { await navigator.clipboard.writeText(cp.dataset.ttcopy); cp.textContent = '✔ ' + T('Copié'); } catch {} return; }
+      if (e.target.closest('.tt-link[href]')) { try { chrome.permissions.request({ origins: HOST_ORIGINS }).catch(() => {}); } catch {} } // sans ça, pas de barre « Ajouter » (Firefox)
       if (e.target.closest('[data-ttskip]')) return tutoSkip();
       if (e.target.closest('[data-ttrestore]')) return tutoRestore();
       if (e.target.closest('[data-tt="next"]')) tutoNext();

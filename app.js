@@ -60,7 +60,7 @@ let viewCat = '';     // '' = toutes, '__none' = sans catégorie, sinon le nom
 async function loadAll() {
   const d = await chrome.storage.local.get(null);
   list = d.cmList || {};
-  settings = { ...Optimizer.DEFAULTS, maxOffers: 50, freshHours: 0, concurrency: 3, avgScanSec: 8, customs: true, minRating: 0, minSales: 0, defaultLangs: [], defaultCond: '', ...(d.cmSettings || {}) };
+  settings = { ...Optimizer.DEFAULTS, maxOffers: 50, freshHours: 0, concurrency: 3, avgScanSec: 8, customs: true, minRating: 0, defaultLangs: [], defaultCond: '', ...(d.cmSettings || {}) };
   if (!settings.v714) { settings.concurrency = 3; settings.maxOffers = 50; settings.freshHours = 0; settings.v714 = true; }
   if (!settings.v69) { settings.maxOffers = 50; if (settings.freshHours == null) settings.freshHours = 6; settings.v69 = true; } // 1 requête par carte
   if (!settings.v101) { settings.concurrency = 3; settings.v101 = true; }
@@ -177,7 +177,6 @@ function filteredOffers(it) {
     (!langs.length || langs.includes(langOf(o))) &&
     (!minC || (COND_RANK[o.cond] || 9) <= COND_RANK[minC]) &&
     (RATING_RANK[o.rating] || 0) >= (+settings.minRating || 0) &&
-    (o.sales || 0) >= (+settings.minSales || 0) &&
     !blocked[o.seller] &&
     !o.restricted &&                       // offre restreinte par le vendeur : impossible à acheter
     !ignored[offerKey(it.id, o)]);
@@ -1150,7 +1149,8 @@ async function runCompare() {
         settings.cmWizard = { day: dayKey(), acct, used: Math.max(n, prev + 1) };
       } catch { settings.cmWizard = { day: dayKey(), acct, used: (settings.cmWizard?.day === dayKey() ? settings.cmWizard.used : 0) + 1 }; }
       saveSettings();
-      results.push({ game, url: resUrl, wanted: parseInt(dd[0], 10) || 0, value: parseEuro(dd[1]), found: parseInt(dd[2], 10) || 0, ship: parseEuro(dd[3]), orders: parseInt(dd[4], 10) || 0, total: parseEuro(dd[5]), missing });
+      results.push({ game, url: resUrl, wanted: parseInt(dd[0], 10) || 0, value: parseEuro(dd[1]), found: parseInt(dd[2], 10) || 0, ship: parseEuro(dd[3]), orders: parseInt(dd[4], 10) || 0, total: parseEuro(dd[5]), missing,
+        trackedExtra: await wizardTrackedExtra(rd) });
     }
   } catch (e) { error = e.message === 'stop' ? T('comparaison arrêtée') : e.message; }
   clearInterval(job.timer);
@@ -1169,6 +1169,33 @@ async function runCompare() {
   renderBest();
 }
 
+// Le Shopping Wizard n'a pas d'option « envoi suivi » : il compte toujours l'envoi le moins cher.
+// Pour comparer à règles égales quand « Toujours en lettre suivie » est coché, on regarde chaque commande qu'il propose
+// (pays du vendeur, nombre de cartes, valeur) et on calcule ce que coûterait le passage en envoi suivi.
+// Les vendeurs « envoi suivi obligatoire » sont déjà comptés en suivi par Cardmarket : rien à ajouter.
+async function wizardTrackedExtra(rd) {
+  const S = { ...Optimizer.DEFAULTS, ...settings, alwaysTracked: false };
+  let extra = 0;
+  for (const card of rd.querySelectorAll('.detailed-result-card')) {
+    if (card.querySelector('.untracked')) continue; // suivi obligatoire chez ce vendeur
+    const tips = [...card.querySelectorAll('.seller-name [aria-label], .seller-name [data-bs-original-title]')].map((e) => e.getAttribute('aria-label') || e.getAttribute('data-bs-original-title') || '');
+    const loc = tips.find((t) => t.includes(':')) || '';
+    const cid = countryId(loc.split(':').pop().trim());
+    const dds = [...card.querySelectorAll('dl dd')].map((x) => x.textContent.trim());
+    const value = parseEuro(dds[1]) || 0;
+    const n = [...card.querySelectorAll('table tbody tr')].reduce((a, tr) => a + (parseInt(tr.children[2]?.textContent, 10) || 1), 0);
+    if (!cid || !n) continue;
+    const table = await loadShipTable(cid, settings.myCountry);
+    const t = Array.isArray(table) && table.length ? table : null;
+    const d = Optimizer.shipping(n, value, true, S, t).cost - Optimizer.shipping(n, value, false, S, t).cost;
+    if (d > 0 && d < 50) extra += d;
+  }
+  return Math.round(extra * 100) / 100;
+}
+// total du Shopping Wizard tel qu'on le compare : + passage en suivi si « Toujours en lettre suivie » est coché
+const cmTotal = () => cmCompare.results.reduce((a, x) => a + x.total + (settings.alwaysTracked ? x.trackedExtra || 0 : 0), 0);
+const cmTrackedExtra = () => (settings.alwaysTracked ? cmCompare.results.reduce((a, x) => a + (x.trackedExtra || 0), 0) : 0);
+
 // compteur : Cardmarket limite le Shopping Wizard à 10 utilisations par jour et par compte.
 // On peut toujours cliquer ; au-delà, le compteur passe en négatif (-1, -2…).
 const WIZARD_PER_DAY = 10;
@@ -1185,12 +1212,14 @@ function compareTile(r, lines) {
   if (!ok) return `<div class="tile cmp"><div class="k">${esc(T('Tu économises (vs comparateur de prix du site)'))}</div>
     <button class="btn sm" data-cmcompare>⚖ ${esc(T('Comparer avec Cardmarket'))}</button>
     ${wizardHint()}</div>`;
-  const diff = cmCompare.total - r.total;
+  const cmT = cmTotal(), extra = cmTrackedExtra();
+  const diff = cmT - r.total;
   const links = cmCompare.results.map((x) => `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(cmCompare.results.length > 1 ? x.game : T('Voir les résultats Cardmarket'))} ↗</a>`).join(' · ');
   const miss = cmCompare.found < cmCompare.wanted;
   return `<div class="tile cmp"><div class="k">${esc(T('Tu économises (vs comparateur de prix du site)'))}</div>
     <div class="v" style="color:${diff > 0.005 ? 'var(--ok)' : diff < -0.005 ? '#f87171' : 'var(--mut)'}">${diff > 0.005 ? euro(diff) : diff < -0.005 ? '− ' + euro(-diff) : '0 €'}</div>
-    <div class="k" style="margin-top:4px">${esc(TF('Shopping Wizard Cardmarket : {a}', { a: euro(cmCompare.total) }))} · ${links}</div>
+    <div class="k" style="margin-top:4px">${esc(TF('Shopping Wizard Cardmarket : {a}', { a: euro(cmT) }))} · ${links}</div>
+    ${extra > 0.005 ? `<div class="k" style="margin-top:2px">${esc(TF('dont {a} pour passer ses envois en lettre suivie, comme ton panier', { a: euro(extra) }))}</div>` : ''}
     ${miss ? `<div class="k danger" style="margin-top:4px">${esc(TF('Cardmarket ne trouve pas certaines cartes : {a} article(s) sur {b}.', { a: cmCompare.found, b: cmCompare.wanted }))}</div>` : ''}
     ${wizardHint()}
     <button class="btn ghost xs" data-cmcompare title="${esc(T('Relancer la comparaison'))}">↻</button></div>`;
@@ -1330,7 +1359,7 @@ function renderScanned() {
         if (s.q != null && s.q !== scanQuery(it)) tags.push(`<span class="tag warn">${T('filtres changés : re-scanne')}</span>`);
         else if (s.partial) tags.push(`<span class="tag">${T('les moins chères')}</span>`);
         if (s.loggedOut) tags.push('<span class="tag warn">non connecté (50 max)</span>');
-        if (s.offers.length && s.offers[0].rating === undefined && (+settings.minRating || +settings.minSales)) tags.push('<span class="tag warn">re-scanne pour filtrer les vendeurs</span>');
+        if (s.offers.length && s.offers[0].rating === undefined && +settings.minRating) tags.push('<span class="tag warn">re-scanne pour filtrer les vendeurs</span>');
       }
       return `<div class="row ser ${missingLang(it) ? 'missing' : ''} ${it.checked ? '' : 'off'}" data-id="${esc(it.id)}" style="--ser:${serColor[seriesKey(it)]}">
         <input type="checkbox" data-chk ${it.checked ? 'checked' : ''} title="Sélection (scan + calcul)">
@@ -1710,6 +1739,22 @@ function showBanner(html, key) { // key = identifiant du message : fermé avec �
   $('banner').hidden = false;
   $('bannerMsg').innerHTML = html;
 }
+// Firefox ne donne pas toujours l'accès à cardmarket.com à l'installation (ou après une mise à jour) :
+// sans lui, la barre « Ajouter » n'apparaît pas sur les pages de cartes. On le vérifie et on propose un bouton.
+const HOST_ORIGINS = [ORIGIN + '/*', 'https://product-images.s3.cardmarket.com/*', 'https://help.cardmarket.com/*'];
+async function checkHostAccess() {
+  let ok = true;
+  try { ok = await chrome.permissions.contains({ origins: HOST_ORIGINS }); } catch {}
+  if (ok) { if (bannerKey === 'hostaccess') showBanner(null); return; }
+  bannerHtml(`🔒 ${esc(T('TCG Price Hunter n\'a pas encore le droit d\'accéder à Cardmarket : la barre « Ajouter » ne peut pas s\'afficher sur les pages de cartes.'))}
+    <button class="btn primary sm" id="grantHost" style="margin-left:8px">${esc(T('Autoriser l\'accès à Cardmarket'))}</button>`, 'hostaccess');
+  $('grantHost')?.addEventListener('click', async () => {
+    try { await chrome.permissions.request({ origins: HOST_ORIGINS }); } catch {}
+    checkHostAccess();
+  });
+}
+try { chrome.permissions.onAdded?.addListener(() => checkHostAccess()); chrome.permissions.onRemoved?.addListener(() => checkHostAccess()); } catch {}
+
 function banner(t, key) { showBanner(t ? esc(t).replace(/\bCardmarket\b/g, CM_LINK).replace(/\n/g, '<br>') : null, key); }
 function bannerHtml(h, key) { showBanner(h, key); } // (texte écrit par l'extension seulement)
 $('bannerClose').addEventListener('click', () => { closedKey = bannerKey; $('banner').hidden = true; });
@@ -2099,7 +2144,7 @@ $('exportReqLog').addEventListener('click', exportReqLog);
 $('cpStop').addEventListener('click', () => $('stopBtn').click());
 $('clearReqLog').addEventListener('click', () => { reqLog = []; chrome.storage.local.set({ cmReqLog: [] }); $('nReqLog').textContent = 0; });
 
-loadAll().then(() => { applyTheme(); startI18n(); renderAll(); decorateBg(); refreshEurope(); const vt = $('verTag'); if (vt) { vt.title = T('Voir les nouveautés') + ' · ' + BUILD; vt.classList.toggle('new', settings.seenVersion !== appVersion); } if (!settings.tutoDone && typeof showTuto === 'function') setTimeout(() => showTuto(0), 400); });
+loadAll().then(() => { applyTheme(); startI18n(); renderAll(); decorateBg(); refreshEurope(); checkHostAccess(); const vt = $('verTag'); if (vt) { vt.title = T('Voir les nouveautés') + ' · ' + BUILD; vt.classList.toggle('new', settings.seenVersion !== appVersion); } if (!settings.tutoDone && typeof showTuto === 'function') setTimeout(() => showTuto(0), 400); });
 
 // numéro de version affiché sous le logo (BETA tant que la version n'est pas validée)
 // ---------- Choix du site (pour l'instant : Cardmarket ; d'autres sites viendront) ----------
@@ -2165,7 +2210,7 @@ function showWhatsNew() {
   if (settings.seenVersion !== appVersion) { settings.seenVersion = appVersion; saveSettings(); }
   $('verTag').classList.remove('new');
 }
-const BUILD = 'b2611-0040'; // numéro de version interne : visible dans les erreurs, pour savoir quelle copie tourne
+const BUILD = 'b2611-0130'; // numéro de version interne : visible dans les erreurs, pour savoir quelle copie tourne
 try {
   const m = (globalThis.browser || globalThis.chrome).runtime.getManifest();
   appVersion = m.version;

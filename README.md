@@ -13,7 +13,7 @@
 <p align="center">
   <a href="https://discord.gg/Vm8vfqznh2"><img src="https://img.shields.io/badge/Discord-join-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord"></a>
   <a href="https://ko-fi.com/anastasiophrenelia"><img src="https://img.shields.io/badge/Ko--fi-support%20the%20project-FF5E5B?style=flat-square&logo=kofi&logoColor=white" alt="Ko-fi"></a>
-  <img src="https://img.shields.io/badge/version-1.31-1b63e0?style=flat-square" alt="Version 1.31">
+  <img src="https://img.shields.io/badge/version-1.32-1b63e0?style=flat-square" alt="Version 1.32">
   <img src="https://img.shields.io/badge/license-all%20rights%20reserved-555?style=flat-square" alt="License">
 </p>
 
@@ -30,7 +30,7 @@
 ## ✨ What it does
 
 1. **Add your cards**: click "➕ Add" on any Cardmarket card page, or import a whole deck from Piltover Archive or Riftdecks (up to 5 decks at once, one category each).
-2. **Choose what you accept**: card language, minimum condition, your delivery country and which sellers to keep (by country, rating, number of sales). By default, only countries with no customs fees to you.
+2. **Choose what you accept**: card language, minimum condition, your delivery country and which sellers to keep (by country and rating). By default, only countries with no customs fees to you.
 3. **Scan**: the extension reads the offers of every card on Cardmarket. ⚡ Fast for a quick look, 🎯 Medium for everyday use, 🔍 Long to see the most sellers right before buying.
 4. **Get the best basket**: it works out the cheapest combination of sellers with Cardmarket's real shipping rates (letter, tracked letter, parcel) and customs/import VAT when needed, and can split a card across several sellers when that's cheaper.
 5. **Check you're saving**: compare your basket with Cardmarket's own Shopping Wizard in one click.
@@ -51,8 +51,10 @@ Works with every card sold on Cardmarket: Riftbound, Pokémon, Magic, One Piece,
 - **Minimum condition for all cards** with coloured badges (EX also accepts NM and MT), a select-all checkbox, a "Delete selection" button, and categories removed automatically once emptied.
 - **Loading screen** while the basket is calculated, and **click a card image** to zoom in.
 - **Activity log** in Settings (each line kept 7 days) to attach to a bug report on Discord.
-- **Interactive tutorial** on first launch (replay it from Settings). *1.31: a ✕ to skip the whole tutorial.*
+- **Interactive tutorial** on first launch (replay it from Settings).
 - Default sellers: countries with **no customs fees** to you.
+
+*1.31: a ✕ to skip the whole tutorial. 1.32: with "Always tracked letter" on, the Cardmarket comparison also counts tracked shipping, so both baskets follow the same rules; "Min. sales" filter removed; on Firefox, a button to allow access to Cardmarket if it's missing.*
 
 ## 📦 Install on Chrome (from GitHub)
 
