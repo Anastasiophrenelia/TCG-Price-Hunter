@@ -1151,6 +1151,7 @@ async function runCompare() {
       saveSettings();
       results.push({ game, url: resUrl, wanted: parseInt(dd[0], 10) || 0, value: parseEuro(dd[1]), found: parseInt(dd[2], 10) || 0, ship: parseEuro(dd[3]), orders: parseInt(dd[4], 10) || 0, total: parseEuro(dd[5]), missing,
         trackedExtra: await wizardTrackedExtra(rd) });
+      logAction(`Shopping Wizard : ${euro(results.at(-1).total)}, en lettre suivie ${euro(results.at(-1).total + results.at(-1).trackedExtra)}`);
     }
   } catch (e) { error = e.message === 'stop' ? T('comparaison arrêtée') : e.message; }
   clearInterval(job.timer);
@@ -1174,23 +1175,18 @@ async function runCompare() {
 // (pays du vendeur, nombre de cartes, valeur) et on calcule ce que coûterait le passage en envoi suivi.
 // Les vendeurs « envoi suivi obligatoire » sont déjà comptés en suivi par Cardmarket : rien à ajouter.
 async function wizardTrackedExtra(rd) {
-  const S = { ...Optimizer.DEFAULTS, ...settings, alwaysTracked: false };
-  let extra = 0;
-  for (const card of rd.querySelectorAll('.detailed-result-card')) {
-    if (card.querySelector('.untracked')) continue; // suivi obligatoire chez ce vendeur
-    const tips = [...card.querySelectorAll('.seller-name [aria-label], .seller-name [data-bs-original-title]')].map((e) => e.getAttribute('aria-label') || e.getAttribute('data-bs-original-title') || '');
-    const loc = tips.find((t) => t.includes(':')) || '';
-    const cid = countryId(loc.split(':').pop().trim());
-    const dds = [...card.querySelectorAll('dl dd')].map((x) => x.textContent.trim());
-    const value = parseEuro(dds[1]) || 0;
-    const n = [...card.querySelectorAll('table tbody tr')].reduce((a, tr) => a + (parseInt(tr.children[2]?.textContent, 10) || 1), 0);
-    if (!cid || !n) continue;
-    const table = await loadShipTable(cid, settings.myCountry);
-    const t = Array.isArray(table) && table.length ? table : null;
-    const d = Optimizer.shipping(n, value, true, S, t).cost - Optimizer.shipping(n, value, false, S, t).cost;
-    if (d > 0 && d < 50) extra += d;
+  // 1) la page des résultats (onglet de travail) affiche « Total en lettre suivie » (calculé par wizard.js) : on relit la valeur
+  for (let i = 0; i < 24; i++) {
+    const v = await inWorker(() => { const e = document.getElementById('tcgph-tracked'); return e ? { t: +e.dataset.total, w: +e.dataset.wizTotal } : null; }).catch(() => null);
+    if (v && isFinite(v.t) && isFinite(v.w)) return Math.max(0, Math.round((v.t - v.w) * 100) / 100);
+    await sleep(500);
   }
-  return Math.round(extra * 100) / 100;
+  // 2) sinon, même calcul ici sur la page téléchargée
+  try {
+    const r = await CMWizard.compute(rd, (c) => loadShipTable(c, settings.myCountry));
+    if (r.orders.length) return Math.max(0, Math.round((r.tTotal - r.total) * 100) / 100);
+  } catch {}
+  return 0;
 }
 // total du Shopping Wizard tel qu'on le compare : + passage en suivi si « Toujours en lettre suivie » est coché
 const cmTotal = () => cmCompare.results.reduce((a, x) => a + x.total + (settings.alwaysTracked ? x.trackedExtra || 0 : 0), 0);
@@ -2210,7 +2206,7 @@ function showWhatsNew() {
   if (settings.seenVersion !== appVersion) { settings.seenVersion = appVersion; saveSettings(); }
   $('verTag').classList.remove('new');
 }
-const BUILD = 'b2611-0130'; // numéro de version interne : visible dans les erreurs, pour savoir quelle copie tourne
+const BUILD = 'b2611-0150'; // numéro de version interne : visible dans les erreurs, pour savoir quelle copie tourne
 try {
   const m = (globalThis.browser || globalThis.chrome).runtime.getManifest();
   appVersion = m.version;

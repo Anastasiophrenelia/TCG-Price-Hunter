@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TCG Price Hunter - Cardmarket",
-  "version": "1.32",
+  "version": "1.33",
   "description": "Trouve le panier le moins cher sur Cardmarket : scanne les vendeurs de tes cartes TCG et calcule les commandes, frais de port officiels compris.",
   "permissions": [
     "storage",
@@ -45,6 +45,18 @@
         "i18n.js",
         "parse.js",
         "content.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.cardmarket.com/*/*/Wants/ShoppingWizard/Results/*"
+      ],
+      "js": [
+        "i18n.js",
+        "optimizer.js",
+        "wizcalc.js",
+        "wizard.js"
       ],
       "run_at": "document_idle"
     }
