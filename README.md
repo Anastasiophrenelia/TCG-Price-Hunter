@@ -24,8 +24,8 @@
 | Browser | Status | Where to get it |
 |---|---|---|
 | 🦊 **Firefox** | ✅ Available | [Firefox Add-ons](https://addons.mozilla.org/firefox/addon/tcg-price-hunter-cardmarket/) |
-| 🌊 **Edge** | ✅ Available | Edge Add-ons *(link coming soon)* |
-| 🟡 **Chrome** | ⏳ Not on the Chrome Web Store yet | Here on GitHub: [latest release](../../releases/latest) |
+| 🌊 **Edge** | ⏳ Not on the Edge Store yet | Here on GitHub: [latest release](../../releases/latest) |
+| 🟡 **Chrome** | ⏳ Not on the Chrome Store yet | Here on GitHub: [latest release](../../releases/latest) |
 
 ## ✨ What it does
 
