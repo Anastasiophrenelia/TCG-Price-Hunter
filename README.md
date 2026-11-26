@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://addons.mozilla.org/firefox/addon/tcg-price-hunter-cardmarket/"><img src="https://img.shields.io/badge/Firefox-available-FF7139?style=for-the-badge&logo=firefoxbrowser&logoColor=white" alt="Firefox: available"></a>
-  <img src="https://img.shields.io/badge/Edge-available-0078D7?style=for-the-badge&logo=microsoftedge&logoColor=white" alt="Edge: available">
+  <a href="https://microsoftedge.microsoft.com/addons/detail/tcg-price-hunter-cardma/hknkgmfogkfhjpfhiileokfmolfgifpf"><img src="https://img.shields.io/badge/Edge-available-0078D7?style=for-the-badge&logo=microsoftedge&logoColor=white" alt="Edge: available"></a>
   <a href="../../releases/latest"><img src="https://img.shields.io/badge/Chrome-via%20GitHub-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Chrome: via GitHub"></a>
 </p>
 
@@ -24,8 +24,8 @@
 | Browser | Status | Where to get it |
 |---|---|---|
 | 🦊 **Firefox** | ✅ Available | [Firefox Add-ons](https://addons.mozilla.org/firefox/addon/tcg-price-hunter-cardmarket/) |
-| 🌊 **Edge** | ⏳ Not on the Edge Store yet | Here on GitHub: [latest release](../../releases/latest) |
-| 🟡 **Chrome** | ⏳ Not on the Chrome Store yet | Here on GitHub: [latest release](../../releases/latest) |
+| 🌊 **Edge** | ✅ Available | [Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/tcg-price-hunter-cardma/hknkgmfogkfhjpfhiileokfmolfgifpf) |
+| 🟡 **Chrome** | ⏳ Not on the Chrome Web Store yet | Here on GitHub: [latest release](../../releases/latest) |
 
 ## ✨ What it does
 
