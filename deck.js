@@ -15,7 +15,7 @@ const DECK_SITES = {
     { name: 'Limitless TCG', host: 'limitlesstcg.com', origin: 'https://limitlesstcg.com/*', url: 'https://limitlesstcg.com/decks', ex: 'https://limitlesstcg.com/decks/list/…', parse: (h) => parseLimitless(h) },
   ],
   Magic: [
-    { name: 'MTGGoldfish', host: 'mtggoldfish.com', origin: 'https://www.mtggoldfish.com/*', url: 'https://www.mtggoldfish.com/metagame/standard', ex: 'https://www.mtggoldfish.com/deck/…', exact: false, parse: (h, side) => parseGoldfish(h, side) },
+    { name: 'MTGGoldfish', host: 'mtggoldfish.com', origin: 'https://www.mtggoldfish.com/*', url: 'https://www.mtggoldfish.com/metagame/standard', ex: 'https://www.mtggoldfish.com/deck/…', parse: (h, side) => parseGoldfish(h, side) },
   ],
 };
 const GAME_LABEL = { Riftbound: 'Riftbound', YuGiOh: 'Yu-Gi-Oh!', Pokemon: 'Pokémon', Magic: 'Magic' };
@@ -117,6 +117,16 @@ function parseGoldfish(html, withSide) {
     const m = l.match(/^(\d+)x?\s+(.+)$/);
     if (m && (section === 'main' || withSide)) cards.push({ qty: +m[1], name: m[2].trim(), set: '', num: '', section });
   }
+  // édition de chaque carte : les liens du tableau du deck (/price/<Extension>/<Carte>), ex. Invasion ou The List
+  const ed = new Map();
+  for (const a of doc.querySelectorAll('a[href*="/price/"]')) {
+    const m = (a.getAttribute('href') || '').match(/\/price\/([^/#?]+)\/([^/#?]+)/);
+    if (!m) continue;
+    const dec = (x) => { try { return decodeURIComponent(x.replace(/\+/g, ' ')); } catch { return x.replace(/\+/g, ' '); } };
+    const card = dec(m[2]).replace(/\s*<[^>]*>\s*/g, ' ').trim(), setName = dec(m[1]).trim();
+    if (!ed.has(dkKey(card)) && !/^(online|paper)$/i.test(setName)) ed.set(dkKey(card), setName);
+  }
+  for (const c of cards) { const sn = ed.get(dkKey(c.name)); if (sn) c.setName = sn; }
   const t = (doc.querySelector('h1')?.textContent || doc.title || '').split('\n').map((x) => x.trim()).filter(Boolean)[0] || '';
   return cards.length ? { name: t.replace(/\s+Deck(\s+for.*)?$/i, ''), cards } : null;
 }
@@ -374,7 +384,10 @@ async function startDeckImport() {
       const same = c.set && c.num ? all.find((x) => x.set === c.set && dkNumEq(x.num, c.num)) : null;
       if (!cands.length && same) cands = all.filter((x) => dkKey(x.en) === dkKey(same.en));
       { const seen = new Set(); cands = cands.filter((x) => !seen.has(x.id) && seen.add(x.id)); }
-      const exact = c.set ? cands.filter((x) => x.set === c.set && dkNumEq(x.num, c.num)).sort((a, b) => a.price - b.price)[0] || null : null;
+      // Magic (MTGGoldfish) : l'édition est donnée par son nom ; sur Cardmarket elle est dans le lien (/Magic/Products/Singles/<Extension>/…)
+      const slugOf = (x) => dkKey(((x.url || '').split('/')[5] || '').replace(/-/g, ' '));
+      const exact = c.set ? cands.filter((x) => x.set === c.set && dkNumEq(x.num, c.num)).sort((a, b) => a.price - b.price)[0] || null
+        : c.setName ? cands.filter((x) => slugOf(x) === dkKey(c.setName) || dkKey(x.expName) === dkKey(c.setName)).sort((a, b) => a.price - b.price)[0] || null : null;
       let pick = exact, approx = false;
       if (deckState.mode === 'cheap') {
         const cheap = cands.filter((x) => x.avail > 0 && isFinite(x.price)).sort((a, b) => a.price - b.price)[0];
@@ -412,7 +425,7 @@ function showDeckResult() {
     const keep = alt ? `<label class="dk-keep" title="${esc(T('Garder la version d\'origine du deck pour cette carte'))}"><input type="checkbox" data-dkkeep="${i}" ${x.keep ? 'checked' : ''}> ${esc(T('Garder l\'original'))}</label>` : '';
     return `<tr class="${changed ? 'chg' : ''}${alt && x.keep ? ' kept' : ''}"><td class="q"><input type="number" class="dk-qty" min="1" max="99" value="${x.card.qty}" data-dkqty="${i}" title="${esc(T('Nombre d\'exemplaires'))}"></td>
       ${cheap ? `<td class="im">${img(changed ? x.before : use)}</td><td class="ar">${changed ? '→' : ''}</td><td class="im">${changed ? img(x.after) : ''}</td>` : `<td class="im">${img(use)}</td>`}
-      <td class="nm"><b>${esc(use.name)}</b><i>${esc([use.set, use.num && '#' + use.num].filter(Boolean).join(' '))}${changed ? ` · ${esc(T('au lieu de'))} ${esc(x.before.set)} #${esc(x.before.num)}` : ''}${x.approx && !cheap && x.card.set ? ` · <span class="dk-approx" title="${esc(T('Cette édition n\'a pas été trouvée sur Cardmarket : version la moins chère du même nom'))}">${esc(TF('{s} introuvable : la moins chère', { s: [x.card.set, x.card.num].filter(Boolean).join(' ') }))}</span>` : ''}</i></td>
+      <td class="nm"><b>${esc(use.name)}</b><i>${esc([use.set || use.expName, use.num && '#' + use.num].filter(Boolean).join(' '))}${changed ? ` · ${esc(T('au lieu de'))} ${esc(x.before.set || x.before.expName)}${x.before.num ? ' #' + esc(x.before.num) : ''}` : ''}${x.approx && !cheap && (x.card.set || x.card.setName) ? ` · <span class="dk-approx" title="${esc(T('Cette édition n\'a pas été trouvée sur Cardmarket : version la moins chère du même nom'))}">${esc(TF('{s} introuvable : la moins chère', { s: [x.card.set || x.card.setName, x.card.num].filter(Boolean).join(' ') }))}</span>` : ''}</i></td>
       ${cheap ? `<td class="kp">${keep}</td>` : ''}<td class="pr">${changed ? `<s>${pr(x.before)}</s> ` : ''}${pr(use)}${save > 0.004 ? `<em>−${euro(save)}</em>` : ''}</td><td class="dl"><button class="dk-del" data-dkdel="${i}" title="${esc(T('Retirer cette carte'))}">✕</button></td></tr>`;
   };
   const before = sum((x) => x.before), after = sum(dkUse);

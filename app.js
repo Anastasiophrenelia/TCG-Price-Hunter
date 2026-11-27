@@ -106,7 +106,8 @@ async function loadAll() {
   cats = d.cmCats || [];
   ignored = d.cmIgnored || {};
   blocked = d.cmBlocked || {};
-  lastCartFailed = Array.isArray(d.cmCartFailed) ? d.cmCartFailed : [];
+  lastCartQty = d.cmCartQty || null; cartAdj = d.cmCartAdj || null;
+  lastCartFailed = (Array.isArray(d.cmCartFailed) ? d.cmCartFailed : []).map((f) => (/pas dans ton panier|not in your cart/i.test(f.reason || '') ? { ...f, check: true } : f)); // (ancienne vérification peu fiable : à vérifier, pas d'alternative)
   cartRetryIds = Array.isArray(d.cmCartRetry) ? d.cmCartRetry : [];
   cartResume = Array.isArray(d.cmCartResume) ? d.cmCartResume : [];
   cmCompare = d.cmCompare || null;
@@ -208,6 +209,7 @@ function filteredOffers(it, langs = cardLangs(it)) {
     (RATING_RANK[o.rating] || 0) >= (+settings.minRating || 0) &&
     !blocked[o.seller] &&
     !o.restricted &&                       // offre restreinte par le vendeur : impossible à acheter
+    (!it.foil || (it.foil === 'Y') === isFoilOffer(o)) && // Magic : foil seulement / sans foil
     !ignored[offerKey(it.id, o)]);
 }
 
@@ -243,11 +245,12 @@ function scanQuery(it) {
   if (langs.length) q.set('language', langs.join(','));
   const c = cardCond(it);
   if (c && COND_RANK[c] > 1) q.set('minCondition', COND_RANK[c]);
+  if (it.foil && isMagic(it)) q.set('isFoil', it.foil); // Magic : filtre foil de Cardmarket
   return q.toString().replace(/%2C/g, ',');
 }
 function scanUrl(it) {
   const u = new URL(ORIGIN + it.url.split('#')[0]);
-  for (const k of ['sellerCountry', 'sellerReputation', 'language', 'minCondition']) u.searchParams.delete(k);
+  for (const k of ['sellerCountry', 'sellerReputation', 'language', 'minCondition', 'isFoil']) u.searchParams.delete(k);
   for (const [k, v] of new URLSearchParams(scanQuery(it))) u.searchParams.set(k, v);
   return u.toString().replace(/%2C/g, ',');
 }
@@ -865,6 +868,8 @@ function renderProgress() {
 // Rien n'est acheté : tu vérifies et tu payes toi-même sur Cardmarket.
 // réponse de Cardmarket à un ajout au panier : <ajaxResponse><resultType>base64</resultType><systemMessage>base64(HTML)</systemMessage>
 let lastCartFailed = [];
+let lastCartQty = null; // carte -> quantité dans ton panier Cardmarket (dernière lecture)
+let cartAdj = null; // { sig, extra } : écart des remplacements pour ce meilleur panier
 const setCartFailed = (arr) => { lastCartFailed = arr; chrome.storage.local.set({ cmCartFailed: arr }); };
 // cartes re-scannées depuis « Pas ajoutés au panier » (bouton « ajouter les re-scannées ») et articles restants après un ⏹ (bouton « reprendre »)
 let cartRetryIds = [], cartResume = [];
@@ -876,24 +881,261 @@ function b64(s) { try { return new TextDecoder().decode(Uint8Array.from(atob((s 
 function cartAnswer(t) {
   const type = b64((t.match(/<resultType>([\s\S]*?)<\/resultType>/) || [])[1]).trim().toLowerCase();
   const html = b64((t.match(/<systemMessage>([\s\S]*?)<\/systemMessage>/) || [])[1]);
-  const msg = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 140);
+  const msg = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 400);
   const bad = type === 'error' || /alert-danger|alert-warning/.test(html) || /<error\b/i.test(t);
   if (bad) return { ok: false, msg: msg || 'refusé par Cardmarket' };
   if (!/<ajaxResponse/i.test(t) && !type) return { ok: false, msg: 'réponse inattendue de Cardmarket' };
   return { ok: true, msg };
 }
+// Contenu de ton panier Cardmarket, lu par vendeur + carte : Set de « vendeur|/Jeu/Products/... »
+const cartKey = (seller, url) => String(seller || '').toLowerCase() + '|' + String(url || '').replace(/^https?:\/\/[^/]+/, '').replace(/^\/[a-z]{2}\//, '/').split(/[?#]/)[0];
+async function cartIndex(lang, game) {
+  const doc = docOf(await request(`${ORIGIN}/${lang}/${game}/ShoppingCart`));
+  const sellerOf = (el) => { // le bloc d'envoi autour de la ligne : le seul lien vers un vendeur qu'il contient
+    for (; el && el !== doc.body; el = el.parentElement) {
+      const us = [...new Set([...el.querySelectorAll('a[href*="/Users/"]')].map((a) => decodeURIComponent(((a.getAttribute('href') || '').split('/Users/')[1] || '').split(/[/?#]/)[0])).filter(Boolean))];
+      if (us.length === 1) return us[0];
+      if (us.length > 1) return null;
+    }
+    return null;
+  };
+  const idx = new Map(); // « vendeur|carte » -> quantité dans le panier
+  const seen = new Set();
+  for (const tr of doc.querySelectorAll('tr[data-article-id]')) { // lignes du panier (en double dans la page : vue ordinateur / mobile)
+    const id = tr.getAttribute('data-article-id'), a = tr.querySelector('a[href*="/Products/"]');
+    if (!id || seen.has(id) || !a) continue;
+    seen.add(id);
+    const s = sellerOf(tr);
+    if (s) { const k = cartKey(s, a.getAttribute('href')); idx.set(k, (idx.get(k) || 0) + (+tr.getAttribute('data-amount') || 1)); }
+  }
+  if (!idx.size) for (const a of doc.querySelectorAll('a[href*="/Products/"]')) { // (page sans ces lignes : seulement « présent »)
+    const s = sellerOf(a);
+    if (s) idx.set(cartKey(s, a.getAttribute('href')), Infinity);
+  }
+  return idx.size ? idx : null; // panier vide ou page illisible : on ne peut rien conclure
+}
+// 🧹 Nettoyer le panier : retire de ton panier Cardmarket les doublons et les cartes de TA liste qui ne sont plus dans
+// le meilleur panier — seulement quand la bonne offre y est déjà (on ne retire jamais le seul exemplaire d'une carte).
+// Les retraits se font en cliquant le vrai bouton 🗑 de Cardmarket dans l'onglet Cardmarket, un par un, puis on vérifie.
+// Vider TOUT le panier Cardmarket : clic sur son propre bouton « Vider le panier » (un seul clic), puis vérification
+async function clickEmptyCart(cartUrl) {
+  await workerGo(cartUrl);
+  const tabId = await workerTab();
+  const ok = await inWorker(() => {
+    window.confirm = () => true;
+    const b = [...document.querySelectorAll('input[type="submit"], button[type="submit"]')].find((x) => !x.closest('tr') &&
+      /vider le panier|empty (the )?(shopping )?cart|warenkorb leeren|vaciar (la )?cesta|svuota (il )?carrello|esvaziar|winkelwagen legen|opróżnij/i.test(x.value || x.title || x.textContent || ''));
+    if (!b) return false;
+    b.click();
+    return true;
+  }).catch(() => false);
+  if (!ok) return false;
+  await new Promise((resolve) => { // on laisse Cardmarket recharger la page
+    let seen = false;
+    const l = (id, info) => { if (id !== tabId) return; if (info.status === 'loading') seen = true; if (info.status === 'complete' && seen) done(); };
+    const done = () => { chrome.tabs.onUpdated.removeListener(l); clearTimeout(to); clearTimeout(to2); resolve(); };
+    chrome.tabs.onUpdated.addListener(l);
+    const to = setTimeout(done, 15000), to2 = setTimeout(() => { if (!seen) done(); }, 4000);
+  });
+  await sleep(800);
+  await workerGo(cartUrl);
+  return !(await inWorker(() => !!document.querySelector('tr[data-article-id]')).catch(() => true)); // vide = réussi
+}
+// bouton « 🗑 Vider mon panier Cardmarket »
+async function emptyCartButton() {
+  if (job.active) return banner(T('Un scan ou un ajout est déjà en cours, attends la fin.'));
+  const it0 = lastResult?.lines[0] || Object.values(list)[0];
+  const [, lang, game] = new URL(ORIGIN + (it0?.url || '/fr/Riftbound/')).pathname.split('/');
+  const cartUrl = `${ORIGIN}/${lang}/${game}/ShoppingCart`;
+  if (!confirm(T('Vider entièrement ton panier Cardmarket ? Tous les articles, de tous les vendeurs, sont retirés (ça ne s\'annule pas).'))) return;
+  Object.assign(job, { active: true, queue: [], running: new Map(), done: 0, total: 0, failed: [], pausedUntil: 0, strikes: 0,
+    challenge: null, loggedOut: false, t0: Date.now(), durations: [], nextReq: 0, gap: CART_GAP, workerTab: null, workerOpened: 0,
+    lastErr: '', challenges: 0, probe: false, probeBusy: false, stopReason: '', pauseReason: '', kind: 'clean', cont: [], hit1015: false });
+  job.appTab = await chrome.tabs.getCurrent().catch(() => null);
+  busy(true, T('Vidage de ton panier Cardmarket…'));
+  let ok = false;
+  try { ok = await clickEmptyCart(cartUrl); } catch (e) { /* message ci-dessous */ }
+  job.active = false; job.kind = ''; busy(false);
+  if (job.workerTab != null) { chrome.tabs.remove(job.workerTab).catch(() => {}); job.workerTab = null; }
+  backToApp();
+  logAction(ok ? 'Panier Cardmarket vidé' : 'Vidage du panier : pas confirmé', ok ? 'info' : 'erreur');
+  if (ok) { lastCartQty = {}; chrome.storage.local.set({ cmCartQty: {} }); setCartFailed([]); cartAdj = null; chrome.storage.local.remove('cmCartAdj'); }
+  bannerHtml(ok ? '🗑 ' + esc(T('Ton panier Cardmarket est vide.')) : '⚠ ' + esc(T('Le panier n\'a pas pu être vidé : vide-le à la main sur Cardmarket.')) + ` <a href="${cartUrl}" target="_blank">${esc(T('Ouvrir mon panier Cardmarket'))}</a>`);
+  if (lastResult) renderBest();
+}
+// pre = true : avant « Tout ajouter » -> le panier doit devenir exactement le meilleur panier : on ne garde que les offres
+// prévues (vendeur + carte), tout le reste de ce jeu est retiré (les offres prévues manquantes sont ajoutées juste après)
+let cartPreNote = '';
+async function cleanCart(pre = false) {
+  if (job.active) return banner(T('Un scan ou un ajout est déjà en cours, attends la fin.'));
+  if (!lastResult || !lastResult.r.orders.length) return;
+  const plan = new Map(), paths = new Set();
+  let lang = 'fr', game = 'Riftbound';
+  for (const o of lastResult.r.orders) for (const { line, opt } of o.lines) {
+    const k = cartKey(o.seller, line.url), p = k.split('|')[1];
+    plan.set(k, (plan.get(k) || 0) + opt.picked.reduce((t, x) => t + (x.take || 0), 0));
+    paths.add(p);
+    [, lang, game] = new URL(ORIGIN + line.url).pathname.split('/');
+  }
+  const cartUrl = `${ORIGIN}/${lang}/${game}/ShoppingCart`;
+  Object.assign(job, { active: true, queue: [], running: new Map(), done: 0, total: 0, failed: [], pausedUntil: 0, strikes: 0,
+    challenge: null, loggedOut: false, t0: Date.now(), durations: [], nextReq: 0, gap: CART_GAP, workerTab: null, workerOpened: 0,
+    lastErr: '', challenges: 0, probe: false, probeBusy: false, stopReason: '', pauseReason: '', kind: 'clean', cont: [], hit1015: false });
+  job.appTab = await chrome.tabs.getCurrent().catch(() => null);
+  const end = (html) => { job.active = false; job.kind = ''; busy(false); if (job.workerTab != null) { chrome.tabs.remove(job.workerTab).catch(() => {}); job.workerTab = null; } if (pre) { cartPreNote = html || ''; return; } backToApp(); if (html) bannerHtml(html); };
+  // lignes du panier, lues dans la vraie page : <tr data-article-id data-amount data-name>, vendeur = bloc d'envoi autour
+  // (la page contient chaque ligne en double — vue ordinateur / mobile — : on dédoublonne par n° d'article)
+  const readRows = () => inWorker(() => {
+    const out = new Map();
+    for (const tr of document.querySelectorAll('tr[data-article-id]')) {
+      const id = tr.getAttribute('data-article-id');
+      if (!id || out.has(id) || !tr.querySelector('.fonticon-delete')) continue;
+      const a = tr.querySelector('a[href*="/Products/"]');
+      if (!a) continue;
+      let seller = null;
+      for (let el = tr; el && el !== document.body; el = el.parentElement) {
+        const us = [...new Set([...el.querySelectorAll('a[href*="/Users/"]')].map((x) => decodeURIComponent(((x.getAttribute('href') || '').split('/Users/')[1] || '').split(/[/?#]/)[0])).filter(Boolean))];
+        if (us.length === 1) { seller = us[0]; break; }
+        if (us.length > 1) break;
+      }
+      if (seller) out.set(id, { id, seller, href: a.getAttribute('href'), qty: +tr.getAttribute('data-amount') || 1, price: parseFloat(tr.getAttribute('data-price')) || 0, name: tr.getAttribute('data-name') || a.textContent.trim() });
+    }
+    return [...out.values()];
+  });
+  const toRemoveStrict = (rows) => { // avant l'ajout : seules les offres prévues restent (jusqu'à la quantité prévue)
+    const kept = new Map(), del = [];
+    for (const r of rows.filter((x) => (x.href || '').includes(`/${game}/`))) {
+      const k = cartKey(r.seller, r.href), n = plan.get(k) || 0, have = kept.get(k) || 0;
+      if (n && have < n) kept.set(k, have + r.qty); else del.push({ ...r, other: !paths.has(cartKey('', r.href).split('|')[1]) });
+    }
+    return del;
+  };
+  const toRemove = (rows) => pre ? toRemoveStrict(rows) : toRemoveSoft(rows);
+  const toRemoveSoft = (rows) => { // lignes à retirer, carte par carte : on garde d'abord les offres du meilleur panier,
+    // puis (s'il en manque) les moins chères déjà dans le panier, jusqu'au nombre voulu ; le reste est en trop
+    const del = [];
+    for (const p of paths) {
+      const mine = rows.filter((r) => cartKey('', r.href).split('|')[1] === p);
+      const want = [...plan.entries()].filter(([k]) => k.split('|')[1] === p).reduce((t, [, n]) => t + n, 0);
+      if (!want || !mine.length) continue;
+      const keep = new Set(), perKey = new Map();
+      let kept = 0;
+      for (const r of mine) { // 1) les offres prévues
+        const k = cartKey(r.seller, r.href), n = plan.get(k) || 0, have = perKey.get(k) || 0;
+        if (have < n && kept < want) { keep.add(r); perKey.set(k, have + r.qty); kept += r.qty; }
+      }
+      for (const r of mine.filter((x) => !keep.has(x)).sort((x, y) => x.price - y.price)) if (kept < want) { keep.add(r); kept += r.qty; } // 2) les moins chères
+      mine.filter((r) => !keep.has(r)).forEach((r) => del.push(r));
+    }
+    return del;
+  };
+  try {
+    busy(true, T('Lecture de ton panier Cardmarket…'));
+    await workerGo(cartUrl);
+    const rows = await readRows() || [];
+    const del = toRemove(rows);
+    if (!rows.length) return end(pre ? '' : esc(T('Ton panier Cardmarket est vide (ou illisible) : rien à nettoyer.')));
+    if (!del.length) return end(pre ? '' : '✔ ' + esc(T('Ton panier ne contient pas de doublon de tes cartes : rien à retirer.')));
+    busy(false);
+    const lines = del.slice(0, 25).map((r) => `• ${r.seller} : ${r.name} ×${r.qty}${r.price ? ` (${euro(r.price)})` : ''}${r.other ? ' — ' + T('pas dans ta liste') : ''}`).join('\n') + (del.length > 25 ? `\n… +${del.length - 25}` : '');
+    if (!confirm((pre
+      ? TF('Avant d\'ajouter : retirer {n} ligne(s) de ton panier Cardmarket qui ne sont pas dans ce meilleur panier ?\n(OK = retirer puis ajouter · Annuler = ajouter sans rien retirer)', { n: del.length })
+      : TF('Retirer {n} ligne(s) de ton panier Cardmarket ? (doublons et cartes qui ne sont plus dans ce meilleur panier ; la bonne offre de chaque carte reste)', { n: del.length })) + '\n\n' + lines)) return end('');
+    let removed = 0;
+    if (del.length > 1 && del.length >= rows.length) { // rien à garder : on vide tout le panier d'un coup (bouton « Vider le panier » de Cardmarket)
+      busy(true, T('Vidage de ton panier Cardmarket…'));
+      if (await clickEmptyCart(cartUrl)) {
+        logAction(`Panier Cardmarket vidé (${del.length} ligne(s)) avant l'ajout`);
+        return end(`🧹 <b>${esc(TF('{n} ligne(s) retirée(s) de ton panier Cardmarket.', { n: del.length }))}</b>`);
+      }
+      await workerGo(cartUrl); // bouton introuvable : ligne par ligne
+    }
+    for (const [i, r] of del.entries()) {
+      if (!job.active) break;
+      busy(true, TF('Retrait {a} / {b} : {c}', { a: i + 1, b: del.length, c: `${r.name} ×${r.qty} — ${r.seller}` }));
+      let clicked = await inWorker((id) => { // le vrai bouton 🗑 de la ligne (celle qui est visible si elle est en double)
+        window.confirm = () => true;
+        const trs = [...document.querySelectorAll(`tr[data-article-id="${id}"]`)];
+        const btn = (trs.find((t) => t.offsetParent !== null) || trs[0])?.querySelector('form button[type="submit"], .fonticon-delete');
+        if (!btn) return false;
+        (btn.closest('button') || btn).click();
+        return true;
+      }, [r.id]).catch(() => false);
+      if (!clicked) { await workerGo(cartUrl); continue; } // page changée : on la recharge et on passe à la suite
+      // retrait en direct (sans rechargement) : on attend que la ligne disparaisse de la page, sinon on la recharge
+      let gone = false;
+      for (let w = 0; w < 15 && !gone; w++) { await sleep(400); gone = await inWorker((id) => !document.querySelector(`tr[data-article-id="${id}"]`), [r.id]).catch(() => false); }
+      if (!gone) await workerGo(cartUrl);
+      await sleep(600);
+    }
+    // vérification
+    busy(true, T('Vérification de ton panier…'));
+    await workerGo(cartUrl);
+    const left = toRemove(await readRows() || []);
+    removed = del.length - left.length;
+    logAction(`Panier nettoyé : ${removed}/${del.length} ligne(s) retirée(s)` + (left.length ? ` · restent : ${left.map((r) => r.seller + ' ' + r.name).join(', ')}` : ''), left.length ? 'erreur' : 'info');
+    end(`🧹 <b>${esc(TF('{n} ligne(s) retirée(s) de ton panier Cardmarket.', { n: removed }))}</b>` +
+      (left.length ? `<br>⚠ ${esc(TF('{n} n\'ont pas pu être retirées : retire-les à la main ({l}).', { n: left.length, l: left.slice(0, 6).map((r) => `${r.seller} · ${r.name}`).join(', ') }))}` : '') +
+      ` <a href="${cartUrl}" target="_blank">${esc(T('Ouvrir mon panier Cardmarket'))}</a>`);
+  } catch (e) {
+    if (pre) { logAction('Nettoyage du panier avant l\'ajout impossible : ' + e.message, 'erreur'); return end(''); } // l'ajout se fait quand même
+    end('⚠ ' + esc(e.message === 'stop' ? T('arrêté') : e.message));
+  }
+}
+// Pour chaque carte refusée : la meilleure autre offre DÉJÀ scannée (pas de re-scan), port en plus compris, et l'écart de prix
+function cartAlternatives() {
+  if (!lastResult || !lastCartFailed.length) return { list: [], extra: 0, n: 0 };
+  const S = { ...Optimizer.DEFAULTS, ...settings };
+  const bad = new Set(lastCartFailed.map((f) => String(f.aid)));
+  const country = {};
+  for (const l of lastResult.lines) for (const o of l.offers) if (o.country && !country[o.seller]) country[o.seller] = o.country;
+  const agg = new Map(lastResult.r.orders.map((o) => [o.seller, { n: o.n, value: o.items, tracked: !!o.tracked }]));
+  const cost = (seller, n, value, tracked) => {
+    if (n <= 0) return 0;
+    const c = country[seller], sh = Optimizer.shipping(n, value, tracked, S, shipTableFor(c)).cost;
+    return sh + Optimizer.customs(value, sh, customsFor(c));
+  };
+  const out = [];
+  const seenCard = new Set();
+  for (const f0 of lastCartFailed) {
+    if (f0.check) { out.push({ f: f0, alt: null, extra: null, check: true }); continue; } // peut-être bien dans le panier : pas d'alternative (sinon doublon)
+    if (seenCard.has(f0.id)) continue; seenCard.add(f0.id);
+    // quantité qui manque vraiment : ce que tu veux moins ce qui est déjà dans ton panier (tous vendeurs)
+    const want = +(list[f0.id]?.qty) || f0.take, inCart = lastCartQty ? (lastCartQty[cartKey('', f0.url).split('|')[1]] || 0) : null;
+    const need = inCart == null ? lastCartFailed.filter((x) => x.id === f0.id).reduce((t, x) => t + (x.take || 1), 0) : want - inCart;
+    if (need <= 0) continue;
+    const f = { ...f0, take: Math.min(need, want) };
+    const it = list[f.id];
+    let best = null;
+    if (it) for (const o of filteredOffers(it).filter((o) => o.aid && !bad.has(String(o.aid)) && (o.qty || 1) >= f.take).sort((x, y) => x.price - y.price).slice(0, 60)) {
+      country[o.seller] = country[o.seller] || o.country;
+      const a = agg.get(o.seller) || { n: 0, value: 0, tracked: !!settings.alwaysTracked };
+      const add = o.price * f.take;
+      const c = add + cost(o.seller, a.n + f.take, a.value + add, a.tracked) - cost(o.seller, a.n, a.value, a.tracked);
+      if (!best || c < best.c - 1e-9) best = { o, c, add };
+    }
+    if (best) { const a = agg.get(best.o.seller) || { n: 0, value: 0, tracked: !!settings.alwaysTracked }; agg.set(best.o.seller, { ...a, n: a.n + f.take, value: a.value + best.add }); }
+    out.push({ f, alt: best ? best.o : null, extra: best ? Math.round((best.c - f.price * f.take) * 100) / 100 : null });
+  }
+  const ok = out.filter((x) => x.alt);
+  return { list: out, extra: ok.reduce((t, x) => t + x.extra, 0), n: ok.reduce((t, x) => t + x.f.take, 0) };
+}
 async function addToCart(orders, preset, mode) {
   if (job.active) return banner('Un scan ou un ajout est déjà en cours, attends la fin.');
-  const items = preset ? preset.slice() : [];
+  let items = preset ? preset.slice() : [];
+  const allItems = items; // (avant le tri « déjà dans le panier »)
   if (!preset) orders.forEach((o) => o.lines.forEach(({ line, opt }) => opt.picked.forEach((p) =>
     items.push({ id: line.id, aid: p.aid, take: p.take, price: p.price, name: line.name, seller: o.seller, url: line.url }))));
   if (!items.length) return;
+  allItems.splice(0, allItems.length, ...items);
+  const baseTotal = lastResult ? lastResult.r.total : 0; // total du meilleur panier au moment de l'ajout
   logAction(`Ajout au panier lancé : ${items.length} article(s)`);
   const noAid = items.filter((i) => !i.aid);
   if (noAid.length) return banner(`Re-scanne d'abord ces cartes (scannées avec une ancienne version, il manque le n° d'article) : ${[...new Set(noAid.map((i) => i.name))].join(', ')}`);
   const nCards = items.reduce((a, i) => a + i.take, 0);
   const total = items.reduce((a, i) => a + i.take * i.price, 0);
-  if (!confirm(`Ajouter ${nCards} carte${nCards > 1 ? 's' : ''} (${euro(total)} hors port, ${new Set(items.map((i) => i.seller)).size} vendeur(s)) au panier de ton compte Cardmarket ?\n\nRien n'est acheté : tu vérifies et tu payes toi-même sur Cardmarket.`)) return;
+  if (!confirm(`Ajouter ${nCards} carte${nCards > 1 ? 's' : ''} (${euro(total)} hors port, ${new Set(items.map((i) => i.seller)).size} vendeur(s)) au panier de ton compte Cardmarket ?` +
+    `\n\nRien n'est acheté : tu vérifies et tu payes toi-même sur Cardmarket.`)) return;
   try { chrome.permissions.request({ origins: [ORIGIN + '/*'] }).catch(() => {}); } catch {}
 
   Object.assign(job, { active: true, queue: [], running: new Map(), done: 0, total: items.length, failed: [], pausedUntil: 0, strikes: 0,
@@ -917,23 +1159,120 @@ async function addToCart(orders, preset, mode) {
     return tk;
   };
   const failedItems = [];
+  // ---- Ajout « solide » : jamais de suppression dans ton panier. Une offre refusée (déjà vendue, plus assez en stock…)
+  // est remplacée TOUT DE SUITE : on recharge la page de la carte (offres fraîches, à la seconde près), on prend la meilleure
+  // autre offre (port en plus compris, en privilégiant les vendeurs déjà dans le panier) et on l'ajoute dans la foulée.
+  const dead = new Set(); // offres refusées ou disparues : on ne les retente pas
+  const blockedSellers = new Set(); // vendeurs qui limitent le nombre de copies par commande (déjà atteint)
+  const sellerLimit = (m) => /vendeur vend|seller sells|verkäufer|vendedor vende|venditore vende|copies que|copies this/i.test(m || '');
+  const replaced = []; // { name, from, to, extra }
+  const country = {};
+  for (const id of Object.keys(scans)) for (const o of scans[id].offers || []) if (o.country && !country[o.seller]) country[o.seller] = o.country;
+  const plan = new Map(); // ce qui partira chez chaque vendeur (pour calculer le port en plus d'une offre de remplacement)
+  const planAdd = (seller, n, value) => { const a = plan.get(seller) || { n: 0, value: 0 }; plan.set(seller, { n: a.n + n, value: Math.max(0, a.value + value) }); };
+  items.forEach((it) => planAdd(it.seller, it.take, it.take * it.price));
+  const S = { ...Optimizer.DEFAULTS, ...settings };
+  const sendCost = (seller, n, value) => {
+    if (n <= 0) return 0;
+    const c = country[seller], sh = Optimizer.shipping(n, value, !!settings.alwaysTracked, S, shipTableFor(c)).cost;
+    return sh + Optimizer.customs(value, sh, customsFor(c));
+  };
+  const tryAdd = async (it) => { // une demande d'ajout ; renvoie '' si c'est bon, sinon la raison du refus
+    const [, lang, g] = new URL(ORIGIN + it.url).pathname.split('/');
+    for (let tries = 0; ; tries++) {
+      if (!token) token = await getToken(it);
+      const res = await request(`${ORIGIN}/${lang}/${g}/AjaxAction/ShoppingCart_Add_AddArticlesFromProductPage`,
+        { __cmtkn: token, [`idArticle[${it.aid}]`]: it.aid, [`amount[${it.aid}]`]: String(it.take) });
+      if (res.login) throw new Error('connexion demandée');
+      if (res.status !== 200) return `refusé (statut ${res.status})`;
+      const ans = cartAnswer(res.text || '');
+      if (ans.ok) return '';
+      // « Time-out, merci de réessayer » = jeton périmé : on en reprend un et on réessaie une fois
+      if (tries === 0 && /time-?out|refresh|réessayer|actualise/i.test(ans.msg)) { token = null; continue; }
+      return ans.msg || 'refusé par Cardmarket';
+    }
+  };
+  // page de la carte rechargée maintenant : offres fraîches (les disparues sont retirées du scan) + nouveau jeton
+  const freshOffers = async (id) => {
+    const card = list[id];
+    if (!card) return [];
+    const res = await request(scanUrl(card));
+    const doc = docOf(res);
+    const tk = doc.querySelector('input[name="__cmtkn"]')?.value; if (tk) token = tk;
+    const fresh = [...doc.querySelectorAll('.article-row')].map(CMParse.parseRow).filter(Boolean);
+    if (fresh.length && scans[id]) { // mise à jour du scan : les offres qui devraient être sur la page mais n'y sont plus sont parties
+      const keys = new Set(fresh.map(artKey)), top = fresh.length >= 50 ? Math.max(...fresh.map((o) => o.price)) : Infinity;
+      scans[id].offers = (scans[id].offers || []).filter((o) => keys.has(artKey(o)) || o.price > top).concat(fresh.filter((o) => !(scans[id].offers || []).some((x) => artKey(x) === artKey(o))));
+      chrome.storage.local.set({ ['scan_' + id]: scans[id] }).catch(() => {});
+    }
+    fresh.forEach((o) => { if (o.country && !country[o.seller]) country[o.seller] = o.country; });
+    return fresh;
+  };
+  // remplace une offre refusée : jusqu'à 3 essais, les offres fraîches d'abord, puis celles du scan
+  const replace = async (it, why) => {
+    dead.add(String(it.aid));
+    planAdd(it.seller, -it.take, -it.take * it.price);
+    if (sellerLimit(why)) blockedSellers.add(it.seller); // « montant maximum de copies que ce vendeur vend à la fois » : ce vendeur est exclu
+    else if (/maximum|limite|limit/i.test(why)) return null; // (« valeur maximum » : souvent déjà dans ton panier — vérifié à la fin)
+    let freshKeys = null;
+    for (let k = 0; k < 3 && job.active; k++) {
+      job.running.set(it.aid, { t0: Date.now(), rows: 0, label: TF('🔁 Offre partie, recherche d\'une autre : {c}', { c: it.name }) });
+      renderProgress();
+      if (!freshKeys) freshKeys = new Set((await freshOffers(it.id)).map((o) => String(o.aid)));
+      const cand = filteredOffers(list[it.id] || { id: it.id }).filter((o) => o.aid && !dead.has(String(o.aid)) && !blockedSellers.has(o.seller) && (o.qty || 1) >= it.take);
+      let best = null;
+      for (const o of cand) {
+        const a = plan.get(o.seller) || { n: 0, value: 0 }, add = o.price * it.take;
+        const c = add + sendCost(o.seller, a.n + it.take, a.value + add) - sendCost(o.seller, a.n, a.value) + (freshKeys.has(String(o.aid)) ? 0 : 0.001); // à prix égal : l'offre vue à l'instant
+        if (!best || c < best.c) best = { o, c };
+      }
+      if (!best) return null;
+      const alt = { ...it, aid: best.o.aid, price: best.o.price, seller: best.o.seller };
+      const err = await tryAdd(alt);
+      if (!err) {
+        planAdd(alt.seller, alt.take, alt.take * alt.price);
+        const extra = Math.round((best.c - it.take * it.price) * 100) / 100;
+        replaced.push({ name: it.name, from: it.seller, to: alt.seller, extra, item: alt });
+        logAction(`Remplacée tout de suite : ${it.name} — ${it.seller} → ${alt.seller} (${euro(alt.price)}, écart ${extra >= 0 ? '+' : ''}${euro(extra)})`);
+        return alt;
+      }
+      dead.add(String(alt.aid));
+      if (sellerLimit(err)) blockedSellers.add(alt.seller);
+      else if (/maximum|limite|limit/i.test(err)) return null;
+    }
+    return null;
+  };
+  const okItems = []; // articles bien ajoutés (avec leur offre finale)
+  let already = [];
+  const [, cartLang] = new URL(ORIGIN + items[0].url).pathname.split('/');
+  try { // déjà dans ton panier (même vendeur, même carte) : on ne l'ajoute pas une 2e fois
+    const idx0 = await cartIndex(cartLang, game);
+    if (idx0) {
+      const left = new Map(idx0); // quantité déjà là, consommée article par article
+      const next = [];
+      for (const it of items) {
+        const k = cartKey(it.seller, it.url), have = left.get(k) || 0;
+        if (have >= it.take) { already.push(it); left.set(k, have - it.take); }
+        else if (have > 0) { next.push({ ...it, take: it.take - have }); left.set(k, 0); } // il en manque : on ajoute seulement la différence
+        else next.push(it);
+      }
+      if (already.length || next.length !== items.length || next.some((x, i) => x.take !== items[i]?.take)) {
+        items = next; job.total = job.cartItems = items.length;
+        if (already.length) logAction(`${already.length} article(s) déjà dans ton panier (même vendeur, même carte) : pas ré-ajoutés`);
+      }
+    }
+  } catch (e) { if (e.message === 'stop') job.active = false; }
   for (const it of items) {
     if (!job.active) break;
     job.running.set(it.aid, { t0: Date.now(), rows: 0, label: `${it.name} ×${it.take} — ${it.seller}` });
     renderProgress();
     try {
-      const [, lang, g] = new URL(ORIGIN + it.url).pathname.split('/');
-      for (let tries = 0; ; tries++) {
-        if (!token) token = await getToken(it);
-        const res = await request(`${ORIGIN}/${lang}/${g}/AjaxAction/ShoppingCart_Add_AddArticlesFromProductPage`,
-          { __cmtkn: token, [`idArticle[${it.aid}]`]: it.aid, [`amount[${it.aid}]`]: String(it.take) });
-        if (res.login) throw new Error('connexion demandée');
-        if (res.status !== 200) throw new Error(`refusé (statut ${res.status})`);
-        const ans = cartAnswer(res.text || '');
-        if (ans.ok) break;
-        // « Time-out, merci de réessayer » = jeton périmé : on en reprend un et on réessaie une fois
-        if (tries === 0 && /time-?out|refresh|réessayer|actualise/i.test(ans.msg)) { token = null; continue; }
-        throw new Error(ans.msg || 'refusé par Cardmarket');
+      const err = await tryAdd(it);
+      if (!err) okItems.push(it);
+      else {
+        const alt = await replace(it, err);
+        if (alt) okItems.push(alt);
+        else { job.failed.push(`${it.name} chez ${it.seller} (${err})`); failedItems.push({ ...it, reason: err }); }
       }
     } catch (e) {
       if (e.message === 'stop') { job.running.delete(it.aid); break; }
@@ -944,25 +1283,39 @@ async function addToCart(orders, preset, mode) {
     job.running.delete(it.aid);
     job.done++;
   }
-  // vérification : on regarde ce qui est VRAIMENT dans ton panier Cardmarket
-  if (job.done) {
-    try {
-      const [, lang] = new URL(ORIGIN + items[0].url).pathname.split('/');
-      const res = await request(`${ORIGIN}/${lang}/${game}/ShoppingCart`);
-      const html = res.text || '';
-      const tried = items.slice(0, job.done).filter((it) => !failedItems.some((f) => f.aid === it.aid));
-      const has = (aid) => new RegExp(`(^|\\D)${aid}(\\D|$)`).test(html);
-      const found = tried.filter((it) => has(it.aid));
-      if (found.length) { // la page du panier montre bien les n° d'articles : on peut se fier à la vérification
-        for (const it of tried) if (!has(it.aid)) {
-          job.failed.push(`${it.name} chez ${it.seller} (pas dans le panier)`);
-          failedItems.push({ ...it, reason: T('pas dans ton panier (refusé par Cardmarket)') });
-        }
+  // vérification : on regarde ce qui est VRAIMENT dans ton panier Cardmarket, par vendeur + carte (Cardmarket change souvent
+  // le n° d'article quand on prend une partie d'un lot : le n° ne suffit pas). Une carte introuvable est seulement signalée :
+  // rien n'est ajouté en plus sur cette base (sinon : doublons dans ton panier)
+  try {
+    const idx = await cartIndex(cartLang, game);
+    if (idx && okItems.length && okItems.some((it) => idx.has(cartKey(it.seller, it.url)))) {
+      for (const it of okItems) if (!idx.has(cartKey(it.seller, it.url))) {
+        job.failed.push(`${it.name} chez ${it.seller} (pas trouvée dans le panier)`);
+        failedItems.push({ ...it, reason: T('pas trouvée dans ton panier : vérifie sur Cardmarket'), check: true });
       }
-    } catch (e) { /* vérification impossible : on garde le résultat des réponses */ }
-  }
+    }
+  } catch (e) { /* vérification impossible : on garde le résultat des réponses */ }
+  job.running.clear();
   // ajout « re-scannées » ou « reprise » : on garde les refus précédents des autres cartes
-  setCartFailed(mode ? [...lastCartFailed.filter((f) => !items.some((it) => it.aid === f.aid || (f.id && it.id === f.id))), ...failedItems] : failedItems);
+  let failNext = mode ? [...lastCartFailed.filter((f) => !allItems.some((it) => it.aid === f.aid || (f.id && it.id === f.id))), ...failedItems] : failedItems;
+  try { // vérité = ton panier : une carte qui y est en quantité suffisante (chez n'importe quel vendeur) n'est plus « pas ajoutée »
+    const idxEnd = await cartIndex(cartLang, game);
+    if (idxEnd) {
+      const byPath = new Map();
+      for (const [k, n] of idxEnd) { const pth = k.split('|')[1]; byPath.set(pth, (byPath.get(pth) || 0) + n); }
+      lastCartQty = Object.fromEntries(byPath); chrome.storage.local.set({ cmCartQty: lastCartQty });
+      failNext = failNext.filter((f) => { const it = list[f.id]; return !(it && (byPath.get(cartKey('', f.url).split('|')[1]) || 0) >= (+it.qty || 1)); });
+      const seenCard = new Set(); failNext = failNext.filter((f) => !seenCard.has(f.id) && seenCard.add(f.id)); // une ligne par carte
+    }
+  } catch (e) { /* panier illisible : on garde la liste */ }
+  setCartFailed(failNext);
+  // écart de prix des remplacements (et des alternatives) : le « Total à payer » est mis à jour quand tout est dans le panier
+  { const ex = replaced.reduce((t, x) => t + x.extra, 0) + (mode === 'alt' ? okItems.reduce((t, x) => t + (x.extra || 0), 0) : 0);
+    if (lastResult) {
+      const key = compareSig(lastResult.lines); // mêmes cartes / quantités / filtres (le calcul peut changer après le retrait des offres parties)
+      if (!cartAdj || cartAdj.key !== key) cartAdj = { key, base: baseTotal, extra: 0 };
+      cartAdj.extra = Math.round((cartAdj.extra + ex) * 100) / 100; chrome.storage.local.set({ cmCartAdj: cartAdj });
+    } }
   // arrêté avec ⏹ : on garde ce qui reste à ajouter pour le bouton « Reprendre »
   setCartResume(!job.active ? items.slice(job.done) : []);
   // cartes bien ajoutées : plus besoin du bouton « ajouter les re-scannées » pour elles
@@ -980,9 +1333,13 @@ async function addToCart(orders, preset, mode) {
   $('progText').textContent = `✔ ${ok} article${ok > 1 ? 's' : ''} ajouté${ok > 1 ? 's' : ''}` + (job.failed.length ? ` · ${job.failed.length} échec(s)` : '');
   $('progEta').textContent = ''; $('progList').innerHTML = ''; $('stopBtn').hidden = true; $('barFill').style.width = '100%';
   bannerHtml(`<b>🛒 ${ok} article${ok > 1 ? 's' : ''} ajouté${ok > 1 ? 's' : ''} à ton panier ${CM_LINK}.</b> ` +
+    (cartPreNote ? `<br>${cartPreNote.replace(/ <a href=[\s\S]*$/, '')} ` : '') +
+    (already.length ? `<br>✔ ${esc(TF('{n} article(s) déjà dans ton panier : pas ajoutés une 2e fois.', { n: already.length }))} ` : '') +
+    (replaced.length ? `<br>🔁 ${esc(TF('{n} offre(s) partie(s) remplacée(s) tout de suite (écart {d}) :', { n: replaced.length, d: (replaced.reduce((t, x) => t + x.extra, 0) >= 0 ? '+' : '−') + euro(Math.abs(replaced.reduce((t, x) => t + x.extra, 0))) }))} ${esc(replaced.slice(0, 6).map((x) => `${x.name} (${x.from} → ${x.to})`).join(', ') + (replaced.length > 6 ? ` +${replaced.length - 6}` : ''))} ` : '') +
     `<a href="${ORIGIN}/fr/${encodeURIComponent(game)}/ShoppingCart" target="_blank">Ouvrir mon panier Cardmarket</a> pour vérifier et payer.` +
     (job.failed.length ? `<br>❌ ${job.failed.length} pas ajouté(s) au panier : la liste est à droite, dans « Pas ajoutés au panier ».` : '') +
     (job.stopReason ? `<br>⏹ ${esc(job.stopReason)}` : ''));
+  cartPreNote = '';
   if (lastResult) renderBest(); // affiche la liste « Pas ajoutés au panier » à droite
 }
 
@@ -1609,13 +1966,16 @@ function wizardWhy(lines) {
   return T('Le Shopping Wizard reste moins cher : relance « Comparer avec Cardmarket » après ton dernier scan, puis « 🔎 Vérifier chez les vendeurs ». S\'il reste un écart, ce sont les frais de port estimés (Cardmarket précise qu\'ils peuvent varier selon l\'envoi choisi).');
 }
 
+// total après l'ajout au panier : + l'écart des offres remplacées, quand tout est dans ton panier (plus de « Pas ajoutés »)
+const cartAdjOk = () => !!(cartAdj && lastResult && cartAdj.key === compareSig(lastResult.lines) && cartAdj.extra && !lastCartFailed.length);
+const shownTotal = (r) => (cartAdjOk() ? Math.round((cartAdj.base + cartAdj.extra) * 100) / 100 : r.total);
 function compareTile(r, lines) {
   const ok = cmCompare && cmCompare.sig === compareSig(lines);
   if (!ok) return `<div class="tile cmp"><div class="k">${esc(T('Tu économises (vs comparateur de prix du site)'))}</div>
     <button class="btn sm" data-cmcompare>⚖ ${esc(T('Comparer avec Cardmarket'))}</button>
     ${wizardHint()}</div>`;
   const cmT = cmTotal(), extra = cmTrackedExtra();
-  const diff = cmT - r.total;
+  const diff = cmT - shownTotal(r);
   const links = cmCompare.results.map((x) => `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(cmCompare.results.length > 1 ? x.game : T('Voir les résultats Cardmarket'))} ↗</a>`).join(' · ');
   const missHtml = wizardMissingHtml(r, lines);
   return `<div class="tile cmp"><div class="k">${esc(T('Tu économises (vs comparateur de prix du site)'))}</div>
@@ -1709,6 +2069,18 @@ function langChips(it, offersAll) {
   return `<div class="chips small">${names.map((n) => `<span class="chip ${chosen.includes(n) ? 'on' : ''}" data-lang="${esc(n)}" title="${esc(n)}">${LANG_CODE[n] || n}${counts[n] ? ` <i>${counts[n]}</i>` : ''}</span>`).join('')}
     ${chosen.length ? '<span class="chip clear" data-lang="" title="Toutes les langues">toutes</span>' : '<span class="hint">toutes langues</span>'}</div>`;
 }
+// Foil (Magic) : certaines cartes n'existent pas en foil -> le choix n'apparaît que si le scan a vu des offres foil
+const isFoilOffer = (o) => /\bfoil\b/i.test(o.extra || '');
+const isMagic = (it) => /\/Magic\//.test(it.url || '') || it.game === 'Magic';
+function foilSelect(it, offersAll) {
+  if (!isMagic(it)) return '';
+  const nf = (offersAll || []).filter(isFoilOffer).length;
+  if (!nf && !it.foil) return '';
+  return `<select data-foil title="${esc(T('Foil : avec ou sans version foil'))}">
+    <option value="" ${!it.foil ? 'selected' : ''}>${esc(T('Foil ou non'))}</option>
+    <option value="N" ${it.foil === 'N' ? 'selected' : ''}>${esc(T('Sans foil'))}</option>
+    <option value="Y" ${it.foil === 'Y' ? 'selected' : ''}>${esc(TF('Foil seulement ({n})', { n: nf }))}</option></select>`;
+}
 function condSelect(it) {
   const c = cardCond(it);
   return `<select data-cond title="État minimum"><option value="">Tous états</option>${CONDS.slice(0, 6).map(([k, l]) => `<option value="${k}" ${c === k ? 'selected' : ''}>${TF('{c} et mieux', { c: k })}</option>`).join('')}</select>
@@ -1731,7 +2103,7 @@ function renderScanned() {
   const nChecked = all.filter((it) => it.checked).length;
   $('scanSel').textContent = `${T('🔍 Scanner la sélection')} (${nChecked})`;
   $('scanAll').textContent = `${T('Tout scanner')} (${all.length})`;
-  { const nf = cartFailedIds().length; $('scanFailed').hidden = !nf; $('scanFailed').textContent = `${T('🔁 Re-scanner les pas ajoutées au panier')} (${nf})`; }
+  { const nf = 0 && cartFailedIds().length; $('scanFailed').hidden = true; $('scanFailed').textContent = `${T('🔁 Re-scanner les pas ajoutées au panier')} (${nf})`; }
   scanEstimateCount = nChecked;
   renderScanMode();
   if (!rows.length && all.length) {
@@ -1769,7 +2141,7 @@ function renderScanned() {
         <a href="${esc(ORIGIN + it.url)}" target="_blank" title="Voir la carte sur Cardmarket"><img loading="lazy" src="${esc(imgUrl(it.img))}" alt=""></a>
         <div class="cardcol"><div class="nm">${esc(it.name)}</div><div class="sub">${esc(it.sub)}${it.cat && cats.includes(it.cat) ? ` · <span class="catname">📁 ${esc(it.cat)}</span>` : ''}</div>
           ${s ? langChips(it, s.offers) : ''}
-          <div class="tags">${condSelect(it)}<select data-cat title="Catégorie">${catOptions(it.cat)}</select>${tags.join('')}</div></div>
+          <div class="tags">${condSelect(it)}${foilSelect(it, s ? s.offers : [])}<select data-cat title="Catégorie">${catOptions(it.cat)}</select>${tags.join('')}</div></div>
         <div class="num"><input type="number" min="1" max="99" value="${it.qty}" data-qty title="Quantité"></div>
         <div class="num"><b>${s ? offers.length : '—'}</b><span>${s && s.offers.length !== offers.length ? 'sur ' + s.offers.length : ''}</span></div>
         <div class="num"><b>${prices.length ? euro(Math.min(...prices)) : '—'}</b></div>
@@ -2020,7 +2392,7 @@ function renderBest() {
   // tuiles
   const saving = r.naive.total - r.total;
   h += `<div class="tiles">
-    <div class="tile main"><div class="k">Total à payer</div><div class="v">${euro(r.total)}</div></div>
+    <div class="tile main"><div class="k">Total à payer</div><div class="v">${euro(shownTotal(r))}</div>${cartAdjOk() ? `<div class="k was">${esc(TF('avant les remplacements : {a}', { a: euro(cartAdj.base) }))}</div>` : ''}</div>
     <div class="tile"><div class="k">Cartes</div><div class="v">${euro(r.items)}</div><div class="k" style="margin-top:4px">${(() => { const nb = r.orders.reduce((a, o) => a + o.n, 0), nu = r.unavailable.length; return esc(TP(`${nb} carte${nb > 1 ? 's' : ''} dans le panier`, '{n} carte(s) dans le panier', { n: nb })) + (nu ? ' · ' + esc(TP(`${nu} introuvable${nu > 1 ? 's' : ''}`, '{n} introuvable(s)', { n: nu })) : ''); })()}</div></div>
     <div class="tile"><div class="k">${TP(`Frais de port · ${r.orders.length} commande${r.orders.length > 1 ? 's' : ''}`, 'Frais de port · {n} commande(s)', { n: r.orders.length })}</div><div class="v">${euro(r.ship)}</div>${r.duty > 0.004 ? `<div class="k" style="margin-top:4px">${esc(TF('+ douane / TVA ≈ {a}', { a: euro(r.duty) }))}</div>` : ''}</div>
     ${compareTile(r, lines)}
@@ -2046,8 +2418,8 @@ function renderBest() {
   const nRetry = r.orders.reduce((a, o) => a + o.lines.filter(({ line }) => retrySet.has(line.id)).reduce((b, { opt }) => b + opt.units, 0), 0);
   const nResume = cartResume.reduce((a, it) => a + it.take, 0);
   h += `<div class="cartbar"><button class="btn primary" data-cart="all">${TP(`🛒 Tout ajouter à mon panier Cardmarket (${nArt} carte${nArt > 1 ? 's' : ''})`, '🛒 Tout ajouter à mon panier Cardmarket ({n} carte(s))', { n: nArt })}</button>
+    <button class="btn sm ghost" data-cartempty title="${esc(T('Clique le bouton « Vider le panier » de Cardmarket : tous les articles de ton panier sont retirés'))}">${esc(T('🗑 Vider mon panier Cardmarket'))}</button>
     ${nResume ? `<button class="btn sm warnbtn" data-cart="resume">${esc(TF("▶ Reprendre l'ajout ({n} carte(s) restante(s))", { n: nResume }))}</button>` : ''}
-    ${nRetry ? `<button class="btn sm warnbtn" data-cart="retry">${esc(TF('🔁 Ajouter les re-scannées au panier ({n} carte(s))', { n: nRetry }))}</button>` : ''}
     <span class="shipwarn">⚠ Les modes de livraison ne sont pas sélectionnés : tu dois les choisir toi-même dans ton panier Cardmarket avant de payer.</span> <span class="danger">Ne ferme pas cette page pendant l'ajout au panier.</span></div>`;
   h += `<h2 class="sectionTitle">🛒 Les commandes à passer</h2>`;
   h += r.orders.map((o, k) => `<div class="order ${k > 2 ? 'closed' : ''}">
@@ -2085,10 +2457,14 @@ function renderBest() {
   const sideUnavail = r.unavailable.length ? `<aside class="unavail"><h3>🚫 ${esc(T('Introuvable avec tes filtres'))} <span>${r.unavailable.length}</span></h3>
     <p class="muted">${esc(T('(pays des vendeurs, langue, état…)'))}</p>
     <ul>${r.unavailable.map((l) => `<li><a href="${esc(ORIGIN + l.url)}" target="_blank">${esc(l.name)}</a></li>`).join('')}</ul></aside>` : '';
+  const alts = cartAlternatives();
+  const sgn = (d) => (d >= 0 ? '+' : '−') + euro(Math.abs(d));
   const sideCart = lastCartFailed.length ? `<aside class="unavail cartfail"><h3>🛒 ${esc(T('Pas ajoutés au panier'))} <span>${lastCartFailed.length}</span></h3>
-    <p class="muted">${esc(T('(souvent : déjà vendus entre-temps, re-scanne ces cartes puis réessaie)'))}</p>
-    <button class="btn sm warnbtn" data-rescanfailed>${esc(T('🔁 Re-scanner ces cartes'))}</button>
-    <ul>${lastCartFailed.map((f) => `<li><a href="${esc(ORIGIN + f.url)}" target="_blank">${esc(f.name)}</a>${f.take > 1 ? ` ×${f.take}` : ''}<div class="muted">${esc(f.seller)} · ${esc(f.reason)}</div></li>`).join('')}</ul></aside>` : '';
+    <p class="muted">${esc(T('(souvent : déjà vendus entre-temps) — autre offre déjà trouvée par le scan, sans re-scanner :'))}</p>
+    ${alts.n ? `<button class="btn sm warnbtn" data-cartalt>${esc(TF('🔁 Ajouter les alternatives ({n} carte(s), {d})', { n: alts.n, d: sgn(alts.extra) }))}</button>` : ''}
+    <ul>${alts.list.map(({ f, alt, extra }) => `<li><a href="${esc(ORIGIN + f.url)}" target="_blank">${esc(f.name)}</a>${f.take > 1 ? ` ×${f.take}` : ''}<div class="muted">${esc(f.seller)} · ${esc(f.reason)}</div>
+      <div class="alt">${alt ? `→ ${esc(alt.seller)} · ${euro(alt.price)} <b class="${extra > 0.005 ? 'up' : 'down'}">${sgn(extra)}</b>` : f.check ? '' : `<span class="muted">${esc(T('aucune autre offre dans le scan'))}</span>`}</div></li>`).join('')}</ul>
+    ${alts.n ? `<p class="muted small">${esc(T('Écart = prix de l\'alternative + port en plus, comparé à l\'offre refusée.'))}</p>` : ''}</aside>` : '';
   const side = sideUnavail || sideCart ? `<div class="sidecol">${sideUnavail}${sideCart}</div>` : '';
   $('best').innerHTML = `<div class="bestMain">${h}</div>${side}`;
   $('best').classList.toggle('withSide', !!side);
@@ -2349,9 +2725,14 @@ function bulkScan(its) {
 $('scanSel').addEventListener('click', () => bulkScan(items().filter((it) => it.checked)));
 $('scanAll').addEventListener('click', () => bulkScan(items()));
 // re-scan forcé des cartes refusées par le panier (même si elles ont été scannées il y a peu : les offres ont changé)
-const rescanCartFailed = () => { const ids = cartFailedIds(); if (ids.length) { setCartRetry([...new Set([...cartRetryIds, ...ids])]); startScan(ids); } };
+const rescanCartFailed = () => { const ids = cartFailedIds(); if (ids.length) { setCartRetry(ids); startScan(ids); } }; // (seulement les cartes de CE re-scan)
 $('scanFailed').addEventListener('click', rescanCartFailed);
-document.addEventListener('click', (e) => { if (e.target.closest('[data-rescanfailed]')) { switchView('scanned'); rescanCartFailed(); } });
+document.addEventListener('click', (e) => { if (e.target.closest('[data-cartempty]')) emptyCartButton(); });
+document.addEventListener('click', (e) => { // alternatives déjà scannées pour les cartes refusées (pas de re-scan)
+  if (!e.target.closest('[data-cartalt]')) return;
+  const items = cartAlternatives().list.filter((x) => x.alt).map(({ f, alt, extra }) => ({ id: f.id, aid: alt.aid, take: f.take, price: alt.price, name: f.name, seller: alt.seller, url: f.url, extra: extra || 0 }));
+  if (items.length) addToCart(null, items, 'alt');
+});
 document.addEventListener('click', (e) => { if (e.target.closest('[data-cmcompare]')) runCompare(); });
 $('stopBtn').addEventListener('click', () => { job.queue = []; job.active = false; renderProgress(); $('progText').textContent = 'Arrêt…'; });
 $('clearAll').addEventListener('click', () => {
@@ -2369,6 +2750,7 @@ $('scanRows').addEventListener('change', (e) => {
   if (e.target.matches('[data-chk]')) { it.checked = e.target.checked; e.target.closest('.row')?.classList.toggle('off', !it.checked); }
   if (e.target.matches('[data-qty]')) it.qty = Math.max(1, Math.min(99, parseInt(e.target.value, 10) || 1));
   if (e.target.matches('[data-cond]')) it.cond = e.target.value;
+  if (e.target.matches('[data-foil]')) it.foil = e.target.value;
   if (e.target.matches('[data-cat]')) {
     const v = e.target.value === '__new' ? newCategory() : e.target.value;
     if (v !== null) { const before = catCounts(); it.cat = v; dropEmptiedCats(before); }
@@ -2419,13 +2801,10 @@ $('best').addEventListener('click', (e) => {
   if (c && lastResult) {
     e.stopPropagation();
     if (c.dataset.cart === 'resume') return addToCart(null, cartResume, 'resume');
-    if (c.dataset.cart === 'retry') { // seulement les cartes re-scannées, avec leur nouveau meilleur vendeur
-      compute(); renderBest(); // recalcul avec les offres fraîchement re-scannées
-      const set = new Set(cartRetryIds);
-      const orders = lastResult.r.orders.map((o) => ({ ...o, lines: o.lines.filter(({ line }) => set.has(line.id)) })).filter((o) => o.lines.length);
-      return addToCart(orders, null, 'retry');
+    if (c.dataset.cart === 'all') { // « Tout ajouter » : on nettoie d'abord le panier (ce qui n'est pas dans ce meilleur panier), puis on le remplit
+      return (async () => { cartPreNote = ''; await cleanCart(true).catch(() => {}); return addToCart(lastResult.r.orders); })();
     }
-    const orders = c.dataset.cart === 'all' ? lastResult.r.orders : lastResult.r.orders.filter((o) => o.seller === c.dataset.cart);
+    const orders = lastResult.r.orders.filter((o) => o.seller === c.dataset.cart);
     return addToCart(orders);
   }
   const t = e.target.closest('[data-toggle]');
@@ -2702,6 +3081,14 @@ const WN_13 = [
 ];
 // Historique complet : toutes les nouveautés, version par version (la plus récente en haut)
 const CHANGELOG = [
+  ['1.41', [
+    ['✨ Foil (Magic)', "Pour les cartes Magic qui existent en foil : choisis « foil ou non », « sans foil » ou « foil seulement ». Le filtre foil actif sur la page Cardmarket est repris quand tu ajoutes la carte."],
+    ['🃏 Bonne édition Magic', "Import MTGGoldfish : l'édition de chaque carte (par ex. Invasion ou The List) est reprise en mode « deck identique »."],
+    ['🛒 Tout ajouter = panier propre', "« Tout ajouter » retire d'abord de ton panier Cardmarket ce qui n'est pas dans le meilleur panier (liste affichée, tu confirmes), garde ce qui y est déjà et ajoute seulement ce qui manque."],
+    ['💶 Total mis à jour', "Une fois tout dans ton panier, le « Total à payer » (et ce que tu économises) tient compte des offres remplacées, avec l'ancien total en dessous."],
+    ['🛒 Ajout solide', "Si une offre est partie au moment de l'ajout, l'extension recharge la page de la carte et ajoute tout de suite la meilleure autre offre (port compris), sans jamais rien supprimer de ton panier. L'écart de prix est affiché à la fin."],
+    ['🔁 Alternatives sans re-scan', "Pour les cartes pas ajoutées au panier, l'extension propose la meilleure autre offre déjà trouvée par le scan, avec l'écart de prix (port compris), et l'ajoute en un clic."],
+  ]],
   ['1.40', [
     ['🔎 Vérifier chez les vendeurs', "Lance la comparaison avec Cardmarket, ajoute ses vendeurs, fouille leurs stocks pour regrouper tes cartes et recalcule un panier encore moins cher. Barre de progression, temps restant, bouton « Arrêter » et ancien → nouveau total à la fin."],
     ['📥 Decks Yu-Gi-Oh!, Pokémon et Magic', "Importe aussi les decks de YGOPRODeck, Limitless TCG et MTGGoldfish, en plus de Piltover Archive et Riftdecks."],
@@ -2766,7 +3153,7 @@ function showWhatsNew() {
   if (settings.seenVersion !== appVersion) { settings.seenVersion = appVersion; saveSettings(); }
   $('verTag').classList.remove('new');
 }
-const BUILD = 'b2711-0040'; // numéro de version interne : visible dans les erreurs, pour savoir quelle copie tourne
+const BUILD = 'b2711-0141'; // numéro de version interne : visible dans les erreurs, pour savoir quelle copie tourne
 try {
   const m = (globalThis.browser || globalThis.chrome).runtime.getManifest();
   appVersion = m.version;

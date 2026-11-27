@@ -792,3 +792,8 @@ html[data-theme=dark] #tuto .tt-bubble::before { border: 0; }
 #whatsNew .wn li { padding-left: 16px; gap: 5px; }
 #whatsNew .wn li b { font-size: 15px; }
 #whatsNew .wn li span { font-size: 14px; line-height: 1.6; }
+.cartfail .alt { margin-top: 3px; font-size: 12px; }
+.cartfail .alt b.up { color: #f87171; }
+.cartfail .alt b.down { color: #22c55e; }
+.cartfail p.small { font-size: 11px; margin-top: 8px; }
+.tile .k.was { margin-top: 4px; text-decoration: line-through; opacity: .75; font-size: 12px; }

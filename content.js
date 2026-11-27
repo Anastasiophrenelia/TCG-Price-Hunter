@@ -44,6 +44,9 @@
   async function addToList(info, qty) {
     const list = await getList();
     list[info.id] = { ...(list[info.id] || {}), ...info, qty, checked: list[info.id]?.checked ?? true, added: list[info.id]?.added || Date.now() };
+    // Magic : filtre foil actif sur la page (isFoil=Y / N) -> repris pour la carte
+    const fq = new URLSearchParams(location.search).get('isFoil');
+    if (/\/Magic\//.test(location.pathname) && (fq === 'Y' || fq === 'N')) list[info.id].foil = fq;
     await chrome.storage.local.set({ cmList: list });
     return list;
   }
