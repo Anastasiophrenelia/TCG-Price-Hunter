@@ -110,6 +110,7 @@
         <div class="vh-actions">
           <label class="sw big" title="Coché : tu prends toujours une lettre suivie, les vendeurs « envoi suivi obligatoire » ne sont plus désavantagés"><input type="checkbox" data-s="alwaysTracked"> Toujours en lettre suivie</label>
           <button id="recalcBtn" class="btn ghost">↻ Recalculer</button>
+          <button id="stockBtn" class="btn ghost" title="Lance le Shopping Wizard de Cardmarket pour trouver plus de vendeurs, fouille leurs stocks, puis recalcule le meilleur panier (2 à 5 minutes)">🔎 Vérifier chez les vendeurs</button>
         </div>
       </header>
       <div id="best"></div>
@@ -172,7 +173,9 @@
             <select data-s="freshHours"><option value="0">jamais (toujours re-scanner)</option><option value="1">1 h</option><option value="6">6 h</option><option value="24">24 h</option><option value="72">3 jours</option></select></label>
           <div class="field"><span>🎓 Tuto <i>le petit guide du premier lancement</i></span><span><button class="btn ghost sm" id="tutoBtn">Revoir le tuto</button></span></div>
           <div class="field"><span>📋 Journal d'activité <i>ce que fait l'extension (scans, comparaisons, imports de decks, ajouts au panier, erreurs) et chaque requête à Cardmarket. Exporte-le et envoie-le sur le Discord si tu as un bug. Chaque ligne est effacée au bout de 7 jours.</i></span><span><b id="nReqLog">0</b> <button class="btn ghost sm" id="exportReqLog">⬇ Exporter</button> <button class="btn ghost sm" id="clearReqLog">Vider</button></span></div>
-          <div class="note">⚠ Cardmarket peut bloquer ton IP s'il reçoit trop de requêtes (la limite n'est pas publique). Dès qu'une carte est scannée, la suivante part (3 à la fois), sans pause, avec un maximum de 280 cartes par minute. Si Cardmarket bloque (erreur 1015), le scan s'arrête : les cartes déjà scannées sont gardées, relance le reste plus tard.</div>
+          <label class="field"><span>Pages Cardmarket par minute <i>maximum · 280 par défaut · plus haut = plus rapide, mais plus de risque d'erreur 1015</i></span><input type="number" min="30" max="1000" step="10" data-s="pagesPerMin"></label>
+          <div class="note warn15" id="warn1015" hidden></div>
+          <div class="note">⚠ Cardmarket peut bloquer ton IP s'il reçoit trop de requêtes (la limite n'est pas publique). Dès qu'une carte est scannée, la suivante part (5 à la fois), sans pause, sans dépasser les pages par minute réglées au-dessus. Si Cardmarket bloque (erreur 1015) : pause de 1 min 30 puis ça repart plus doucement ; une 2e fois, le scan s'arrête et les cartes déjà scannées sont gardées.</div>
 
           <h3 style="margin-top:18px">🌐 Par défaut pour les cartes</h3>
           <div class="field col"><span>Langues voulues <i>aucune cochée = toutes</i></span><div id="defLangs" class="chips"></div></div>

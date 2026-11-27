@@ -304,6 +304,8 @@
     const pref = (l, i, s) => l.options.find((o) => !o.multi && o.seller === s) || l.options.find((o) => o.sellers.includes(s)) || base[i];
 
     const starts = [base.slice()];
+    // départ imposé (ex. le panier du Shopping Wizard) : testé en premier, donc le résultat ne peut pas être plus cher que lui
+    for (const seed of (S.seeds || []).concat(S.seed ? [S.seed] : [])) if (seed) starts.unshift(P.L.map((l, i) => { const sl = seed[l.id]; return sl ? (l.options.find((o) => !o.multi && o.seller === sl) || l.options.find((o) => o.sellers.includes(sl)) || base[i]) : base[i]; }));
     for (const s of topSellers) starts.push(P.L.map((l, i) => pref(l, i, s)));
 
     let best = null;

@@ -683,9 +683,32 @@ html[data-theme=dark] .wn { background: rgba(14,20,36,.97); border: 1px solid rg
 /* calcul en cours */
 #busyOverlay { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; background: rgba(6,10,20,.45); backdrop-filter: blur(2px); cursor: progress; }
 #busyOverlay[hidden] { display: none; }
-#busyOverlay .busy-box { display: flex; align-items: center; gap: 12px; padding: 16px 22px; border-radius: 14px; background: var(--bg); border: 1px solid var(--line); box-shadow: 0 16px 40px rgba(0,0,0,.4); color: var(--txt); font-size: 14px; }
+#busyOverlay .busy-box { display: flex; flex-direction: column; gap: 10px; min-width: 320px; max-width: min(520px, 92vw); padding: 16px 22px; border-radius: 14px; background: var(--bg); border: 1px solid var(--line); box-shadow: 0 16px 40px rgba(0,0,0,.4); color: var(--txt); font-size: 14px; }
 #busyOverlay .spinner { width: 22px; height: 22px; border-radius: 50%; border: 3px solid rgba(47,128,255,.25); border-top-color: #2f80ff; animation: busyspin .8s linear infinite; }
 @keyframes busyspin { to { transform: rotate(360deg); } }
+#busyOverlay .busy-row { display: flex; align-items: center; gap: 12px; }
+#busyOverlay .busy-prog[hidden] { display: none; }
+#busyOverlay .busy-bar { height: 8px; border-radius: 99px; background: rgba(47,128,255,.15); overflow: hidden; }
+#busyOverlay .busy-bar i { display: block; height: 100%; width: 0; border-radius: 99px; background: linear-gradient(90deg,#2f80ff,#22c55e); transition: width .4s ease; }
+#busyOverlay.paused .busy-bar i { background: #f59e0b; }
+#busyOverlay .busy-sub { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
+#busyOverlay .busy-sub small { color: var(--mut); font-size: 12px; }
+#busyOverlay.paused .busy-sub small { color: #f59e0b; font-weight: 600; }
+#busyOverlay .busy-stop { cursor: pointer; white-space: nowrap; }
+#busyOverlay .busy-stop[hidden] { display: none; }
+.banner-gain { margin-top: 6px; padding: 6px 10px; border-radius: 8px; font-size: 13px; color: #16a34a; background: rgba(34,197,94,.12); border-left: 3px solid #22c55e; }
+html[data-theme=dark] .banner-gain { color: #4ade80; }
+.banner-gain.same { color: var(--mut); background: rgba(148,163,184,.1); border-left-color: #94a3b8; }
+.si p { margin: 0 0 10px; font-size: 14px; line-height: 1.45; }
+.si ol { margin: 0 0 10px; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; }
+.si ol li { padding-left: 4px; }
+.si ol li b { display: block; font-size: 14px; }
+.si ol li span { font-size: 13px; line-height: 1.45; color: var(--mut); }
+.si .si-note { font-size: 12px; color: var(--mut); }
+.wn .wn-ver { margin: 18px 0 8px; font-size: 15px; color: var(--txt); display: flex; align-items: center; gap: 8px; }
+.wn .wn-ver:first-of-type { margin-top: 4px; }
+.wn .wn-ver em { font-style: normal; font-size: 11px; padding: 2px 7px; border-radius: 99px; background: rgba(251,191,36,.18); color: #fbbf24; }
+.wn .wn-sub { margin: -8px 0 6px; font-size: 12px; color: var(--mut); }
 /* image en grand */
 #zoomOverlay { position: fixed; inset: 0; z-index: 10000; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.75); cursor: zoom-out; }
 #zoomOverlay[hidden] { display: none; }
@@ -735,3 +758,37 @@ html[data-theme=dark] #tuto .tt-bubble::before { border: 0; }
 .blang-row .chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .blang .chip { cursor: pointer; }
 .blang .hint { margin: 8px 0 0; font-size: 12px; color: var(--mut); }
+.dk-approx { color: #f59e0b; font-weight: 600; }
+
+/* bulle dorée « Vérifier chez les vendeurs » */
+.gold-tip { position: absolute; z-index: 60; width: 300px; padding: 12px 30px 12px 14px; border-radius: 12px;
+  background: linear-gradient(135deg, #f7d774, #d4a017); color: #3a2a00; box-shadow: 0 8px 24px rgba(212,160,23,.35); font-size: 12.5px; line-height: 1.45;
+  animation: gtIn .35s ease-out; }
+.gold-tip b { display: block; margin-bottom: 4px; font-size: 13.5px; }
+.gold-tip p { margin: 4px 0 0; }
+.gold-tip::before { content: ''; position: absolute; left: -7px; top: 14px; border: 7px solid transparent; border-left: 0; border-right-color: #f2cf65; }
+.gold-tip .gt-x { position: absolute; top: 6px; right: 6px; border: 0; background: transparent; color: #3a2a00; cursor: pointer; font-size: 13px; }
+@keyframes gtIn { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: none; } }
+.cmp-why { margin-top: 6px; color: #f59e0b !important; font-weight: 600; }
+.gold-tip.below::before { left: auto; right: 24px; top: -7px; border: 7px solid transparent; border-top: 0; border-bottom-color: #f2cf65; }
+.banner-warn { margin-top: 6px; padding: 6px 10px; border-radius: 8px; font-size: 13px; color: #f87171; background: rgba(248,113,113,.1); border-left: 3px solid #f87171; }
+.cmp-miss { margin-top: 6px; line-height: 1.45; }
+.si-lv { margin: 4px 0 12px; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(251,191,36,.3); background: rgba(251,191,36,.06); }
+.si-lv-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 14px; }
+.si-eta { font-size: 13px; font-weight: 600; color: #fbbf24; }
+.si-lv-btns { display: flex; gap: 6px; margin: 8px 0; }
+.si-lv-btns .btn { flex: 1; font-weight: 700; cursor: pointer; transition: none; }
+.si-lv-btns .btn.ghost.on, .si-lv-btns .btn.on { background: #fbbf24 !important; border-color: #fbbf24 !important; color: #111 !important; }
+.si-lv-txt { font-size: 13px; line-height: 1.4; color: var(--mut); }
+.si-lv-txt b { color: var(--txt); }
+.si ol li.off { opacity: .4; text-decoration: line-through; }
+#v-settings .note.warn15, .note.warn15 { color: #f87171 !important; border: 1px solid rgba(248,113,113,.45) !important; border-left: 3px solid #f87171 !important; background: rgba(248,113,113,.1) !important; font-weight: 600; }
+/* fenêtre « Nouveautés » : plus large et plus aérée pour lire l'historique */
+#whatsNew .wn { width: min(820px, 100%); max-height: 88vh; padding: 30px 36px 24px; }
+#whatsNew .wn h2 { font-size: 22px; margin-bottom: 16px; }
+#whatsNew .wn .wn-sub { font-size: 13px; margin: -10px 0 10px; }
+#whatsNew .wn .wn-ver { font-size: 17px; margin: 26px 0 12px; padding-bottom: 6px; border-bottom: 1px solid rgba(148,163,184,.18); }
+#whatsNew .wn ul { gap: 16px; }
+#whatsNew .wn li { padding-left: 16px; gap: 5px; }
+#whatsNew .wn li b { font-size: 15px; }
+#whatsNew .wn li span { font-size: 14px; line-height: 1.6; }

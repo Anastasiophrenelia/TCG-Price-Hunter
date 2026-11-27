@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TCG Price Hunter - Cardmarket",
-  "version": "1.35",
+  "version": "1.40",
   "description": "Trouve le panier le moins cher sur Cardmarket : scanne les vendeurs de tes cartes TCG et calcule les commandes, frais de port officiels compris.",
   "permissions": [
     "storage",
@@ -84,6 +84,9 @@
   "homepage_url": "https://github.com/Anastasiophrenelia/TCG-Price-Hunter",
   "optional_host_permissions": [
     "https://piltoverarchive.com/*",
-    "https://riftdecks.com/*"
+    "https://riftdecks.com/*",
+    "https://ygoprodeck.com/*",
+    "https://limitlesstcg.com/*",
+    "https://www.mtggoldfish.com/*"
   ]
 }

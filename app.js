@@ -10,8 +10,21 @@ const BETA = false;           // version de test : affiche « BETA » à côté 
 const CART_GAP = 1000;
 const MAX_OFFERS = 300, MAX_SLICES = 9, MAX_SLICES_LONG = 60; // MAX_SLICES : pages en plus par carte au maximum (ton pays découpé + les autres pays ensemble)
 
-const MAX_PER_MIN = 280;      // jamais plus de 280 cartes (requêtes) par minute
-const baseGap = () => Math.ceil(60000 / MAX_PER_MIN); // ≈ 215 ms minimum entre deux requêtes ; sinon la suivante part dès qu'une carte est finie
+const MAX_PER_MIN = 280;      // pages Cardmarket par minute, par défaut (réglable dans les Réglages : 30 à 1000)
+const maxPerMin = () => Math.min(1000, Math.max(30, Math.round(+settings?.pagesPerMin || MAX_PER_MIN)));
+const baseGap = () => Math.ceil(60000 / maxPerMin()); // 280 / min ≈ 215 ms minimum entre deux requêtes ; sinon la suivante part dès qu'une carte est finie
+// vitesse par rapport au réglage par défaut (au-dessus, Cardmarket répond moins vite que la limite : on plafonne l'estimation)
+// erreurs 1015 des 7 derniers jours (une par scan / import au plus) : si elles reviennent souvent, Cardmarket limite
+// sans doute le nombre de pages que ton compte peut charger -> on prévient (bandeau 1015 + Réglages)
+function note1015() {
+  if (job.noted1015 === job.t0) return;
+  job.noted1015 = job.t0;
+  settings.hits1015 = (settings.hits1015 || []).filter((d) => Date.now() - d < 7 * 864e5).concat(Date.now());
+  saveSettings();
+}
+const freq1015 = () => (settings.hits1015 || []).filter((d) => Date.now() - d < 7 * 864e5).length;
+const warn1015Text = () => TF('⚠ {n} erreur(s) 1015 ces 7 derniers jours : Cardmarket limite sans doute le nombre de pages que ton compte peut charger. Tant que cette limite est là, l\'extension ne pourra pas scanner normalement avec ce compte.', { n: freq1015() });
+const rateFactor = () => Math.min(1.6, maxPerMin() / MAX_PER_MIN);
 const SCAN_TIMEOUT = 180000;  // une carte qui met plus de 3 min = échec
 
 const LANGS = [ // nom affiché par Cardmarket -> code court
@@ -60,11 +73,12 @@ let viewCat = '';     // '' = toutes, '__none' = sans catégorie, sinon le nom
 async function loadAll() {
   const d = await chrome.storage.local.get(null);
   list = d.cmList || {};
-  settings = { ...Optimizer.DEFAULTS, maxOffers: 50, freshHours: 0, concurrency: 3, avgScanSec: 8, customs: true, minRating: 0, defaultLangs: [], defaultCond: '', ...(d.cmSettings || {}) };
+  settings = { ...Optimizer.DEFAULTS, maxOffers: 50, freshHours: 0, pagesPerMin: MAX_PER_MIN, concurrency: 3, avgScanSec: 8, customs: true, minRating: 0, defaultLangs: [], defaultCond: '', ...(d.cmSettings || {}) };
   if (!settings.v714) { settings.concurrency = 3; settings.maxOffers = 50; settings.freshHours = 0; settings.v714 = true; }
   if (!settings.v69) { settings.maxOffers = 50; if (settings.freshHours == null) settings.freshHours = 6; settings.v69 = true; } // 1 requête par carte
   if (!settings.v101) { settings.concurrency = 3; settings.v101 = true; }
-  settings.concurrency = 3; // toujours 3 cartes scannées en même temps
+  if (!settings.v140long) { if (!settings.scanMode || settings.scanMode === 'medium') settings.scanMode = 'long'; settings.v140long = true; } // 1.40 : Long par défaut
+  settings.concurrency = 5; // toujours 5 cartes scannées en même temps (la limite de 280 pages / min reste la même)
   delete settings.reqPerMin;
   settings.maxOffers = MAX_OFFERS; // plusieurs pages filtrées par carte (pays, type de vendeur, langue), sans « Montrer plus »
   // langue de l'extension : prise UNE fois au 1er lancement (langue du navigateur, pas l'IP → un VPN ne change rien)
@@ -160,7 +174,7 @@ const cardCond = (it) => (it.cond != null ? it.cond : settings.defaultCond || ''
 // langue choisie dans « Meilleur panier » (sans re-scan) : remplace celle de chaque carte pour le calcul et la comparaison
 const effLangs = (it) => (Array.isArray(settings.bestLangs) && settings.bestLangs.length ? settings.bestLangs : cardLangs(it));
 // scan complémentaire pour une langue choisie dans « Meilleur panier » : les offres sont gardées à part (s.extra), sans toucher au scan normal
-let scanLangOverride = null;
+let scanLangOverride = null, topUpPrevMode = null;
 const langKey = (langs) => langs.map((l) => CM_LANG_ID[l]).filter(Boolean).sort((a, b) => a - b).join(',');
 // le scan de cette carte peut-il avoir raté des offres dans ces langues ? (filtre de langue différent ET offres coupées)
 const needsLangTopUp = (it, langs) => {
@@ -186,6 +200,7 @@ function filteredOffers(it, langs = cardLangs(it)) {
   let all = s.offers;
   const ex = s.extra && langs.length && s.extra[langKey(langs)];
   if (ex) { const seen = new Set(all.map(artKey)); all = all.concat(ex.offers.filter((o) => !seen.has(artKey(o)))); }
+  for (const extra of [s.wiz, s.stock]) if (extra && Date.now() - extra.date < 24 * 3600e3) { const seen = new Set(all.map(artKey)); all = all.concat(extra.offers.filter((o) => !seen.has(artKey(o)))); }
   return all.filter((o) =>
     inFrance(o) &&
     (!langs.length || langs.includes(langOf(o))) &&
@@ -397,6 +412,7 @@ function reqWhat(url, form) {
       const l = u.searchParams.get('language'); if (l && /^\d+$/.test(l)) parts.push('langue ' + l);
       return parts.join(' · ');
     }
+    if (/\/Users\//.test(u.pathname)) return decodeURIComponent(u.pathname.split('/Users/')[1].split('/')[0]) + ' · ' + (u.search ? decodeURIComponent(u.search.slice(1)) : 'stock').slice(0, 80);
     return u.pathname.replace(/^\/\w\w\/\w+\//, '').slice(0, 60);
   } catch { return ''; }
 }
@@ -447,6 +463,7 @@ async function request(url, form, slow = false) {
     if (res.status === 0) { lastErr = t.replace(/^ERREUR\s*/, '').slice(0, 120); if ((job.workerOpened || 0) >= 2) break; continue; }
     // Cloudflare "Error 1015 - You are being rate limited" = blocage temporaire pour trop de requêtes
     const is1015 = /error\s*1015|being rate limited/i.test(t.slice(0, 20000));
+    if (is1015) note1015();
     // captcha (vérification anti-robot) : Cloudflare l'envoie parfois avec le code 429 « trop de requêtes »,
     // mais ce n'est PAS un blocage : on met tout en pause, tu coches la case, et le scan reprend
     if (!is1015 && /<title>\s*(Just a moment|Un instant|Attention Required)/i.test(head)) {
@@ -455,7 +472,8 @@ async function request(url, form, slow = false) {
     }
     // 1re erreur 1015 pendant un scan : pause de 1 min 30, puis on repart plus doucement avec 50 offres par carte
     // (les cartes gardent les offres déjà chargées). Une 2e fois : on arrête, comme avant.
-    if ((is1015 || res.status === 429) && job.active && !job.kind && !job.hit1015) {
+    // (pareil pendant l'import de deck et la vérification des stocks : pause puis on repart plus doucement)
+    if ((is1015 || res.status === 429) && job.active && (!job.kind || job.kind === 'deck' || job.kind === 'stock') && !job.hit1015) {
       job.hit1015 = true; job.noMore = true;
       job.gap = Math.max(job.gap * 2, 500);
       job.pauseStart = Date.now(); job.pausedUntil = Date.now() + 90000;
@@ -469,6 +487,7 @@ async function request(url, form, slow = false) {
       if (job.active) {
         job.stopReason = is1015 ? T('Cardmarket t\'a bloqué pour trop de requêtes (erreur 1015) : scan arrêté. Les cartes déjà scannées sont gardées, relance le reste plus tard.')
           : T('Cardmarket freine (trop de requêtes) : scan arrêté. Les cartes déjà scannées sont gardées, relance le reste plus tard.');
+        if (is1015 && freq1015() >= 1) job.stopReason += ' ' + warn1015Text();
         job.queue.length = 0; job.active = false;
       }
       throw new Error('stop');
@@ -591,15 +610,23 @@ function sliceCountries(it, mode) {
   const home = +settings.myCountry;
   const others = allowed.filter((c) => c !== home);
   const mine = allowed.includes(home) ? [{ c: [home], t: '0' }, { c: [home], t: '1,2' }] : [];
-  if (mode === 'long') { // chaque pays un par un, du port le moins cher au plus cher
+  if (mode === 'long') {
+    // les gros marchés de Cardmarket un par un ; les petits pays regroupés par 6 sur une seule page.
+    // Un groupe qui a moins de 50 offres = tout vu en 1 page ; 50 ou plus = il est coupé en deux (jusqu'au pays seul).
     const score = (c) => feeInfo(c)?.score ?? 99;
-    return mine.concat(others.sort((a, b) => score(a) - score(b)).map((c) => ({ c: [c], one: true })));
+    const sorted = others.sort((a, b) => score(a) - score(b));
+    const small = sorted.filter((c) => !BIG_MARKETS.includes(c));
+    const out = sorted.filter((c) => BIG_MARKETS.includes(c)).map((c) => ({ c: [c], one: true }));
+    for (let i = 0; i < small.length; i += 6) { const g = small.slice(i, i + 6); out.push(g.length > 1 ? { c: g, pack: true } : { c: g, one: true }); }
+    return mine.concat(out.sort((a, b) => score(a.c[0]) - score(b.c[0])));
   }
   // tous les autres pays d'un coup (1 seule page) : les 50 moins chères hors de chez toi
   return mine.concat(others.length ? [{ c: others }] : []);
 }
-const SCAN_MODES = { fast: 640, medium: 19.2, long: 6.6 }; // cartes par minute (mesuré : 32 cartes = 10 s / 1 min 47 / 4 min 58)
-const scanMode = () => (SCAN_MODES[settings.scanMode] ? settings.scanMode : 'medium');
+// gros marchés : interrogés pays par pays en scan Long (Allemagne, France, Italie, Espagne, Pays-Bas, Belgique, Autriche, Portugal)
+const BIG_MARKETS = [7, 12, 17, 10, 23, 2, 1, 26];
+const SCAN_MODES = { fast: 640, medium: 30, long: 13 }; // cartes par minute (1.40 : petits pays regroupés + 5 cartes à la fois ; avant : 19,2 / 6,6 mesurés à 3 cartes)
+const scanMode = () => (SCAN_MODES[settings.scanMode] ? settings.scanMode : 'long'); // Long par défaut
 function sliceUrl(url, sl) {
   const u = new URL(url);
   u.searchParams.set('sellerCountry', sl.c.join(','));
@@ -621,7 +648,11 @@ async function scanMore(st) {
   for (const o of got) { const k = artKey(o); if (!st.seen.has(k)) { st.seen.add(k); st.offers.push(o); } }
   // ce groupe a encore plus de 50 offres : on le redécoupe (type de vendeur, puis langue).
   // Ton pays passe d'abord ; les autres pays aussi s'il reste de la place (utile si ton pays a peu d'offres, ex. Hongrie)
-  if (got.length >= 50 && CMParse.loadMoreParams(doc) && !sl.l && !sl.one && lastPrice(got) <= st.cutoff) { // seulement si ce morceau peut encore cacher des offres utiles
+  if (sl.pack && got.length >= 50 && CMParse.loadMoreParams(doc)) { // groupe de petits pays trop rempli : coupé en deux
+    const h = Math.ceil(sl.c.length / 2);
+    st.slices.unshift(...[sl.c.slice(0, h), sl.c.slice(h)].map((c) => (c.length > 1 ? { c, pack: true } : { c, one: true })));
+    st.left++; // (le découpage ne mange pas le budget de pages)
+  } else if (got.length >= 50 && CMParse.loadMoreParams(doc) && !sl.l && !sl.one && !sl.pack && lastPrice(got) <= st.cutoff) { // seulement si ce morceau peut encore cacher des offres utiles
     let kids = [];
     if (!sl.t) kids = ['0', '1,2'].map((t) => ({ c: sl.c, t }));
     else {
@@ -645,7 +676,10 @@ async function finishCard(st, partial) {
     await chrome.storage.local.set({ ['scan_' + st.id]: s });
     return 'done';
   }
+  const keepWiz = scans[st.id]?.wiz, keepStock = scans[st.id]?.stock;
   scans[st.id] = { date: Date.now(), offers: st.offers, url: list[st.id]?.url, partial, loggedOut: false, q: scanQuery(list[st.id]) };
+  if (keepWiz && Date.now() - keepWiz.date < 24 * 3600e3) scans[st.id].wiz = keepWiz;
+  if (keepStock && Date.now() - keepStock.date < 24 * 3600e3) scans[st.id].stock = keepStock;
   await chrome.storage.local.set({ ['scan_' + st.id]: scans[st.id] });
   return 'done';
 }
@@ -725,6 +759,7 @@ function endScan(stopped = false) {
   $('progList').innerHTML = '';
   $('stopBtn').hidden = true;
   $('barFill').style.width = '100%';
+  if (topUpPrevMode !== null) { settings.scanMode = topUpPrevMode; topUpPrevMode = null; } // complément de langue fini : on remet ton mode de scan
   saveSettings(); // garde la durée moyenne par carte pour les prochaines estimations
   const wasTopUp = !!scanLangOverride;
   scanLangOverride = null;
@@ -752,7 +787,7 @@ const fmtRate = (r) => r ? TF('⌀ {n} cartes par minute', { n: r.toLocaleString
 // estimation : 130 cartes par minute + ~7 s de démarrage (ouverture et chargement de la page Cardmarket)
 const EST_PER_MIN = 130, EST_START_SEC = 7;
 function estimateSec(nCards, started, mode = scanMode()) {
-  return nCards ? (started ? 0 : EST_START_SEC) + (nCards / (SCAN_MODES[mode] || EST_PER_MIN)) * 60 : 0;
+  return nCards ? (started ? 0 : EST_START_SEC) + (nCards / ((SCAN_MODES[mode] || EST_PER_MIN) * rateFactor())) * 60 : 0;
 }
 function etaText() {
   const now = Date.now();
@@ -788,7 +823,7 @@ function renderCartProg() {
 }
 
 function renderProgress() {
-  if (!job.active) return;
+  if (!job.active || job.kind === 'stock' || job.kind === 'deck') return; // (ces deux-là ont leur propre fenêtre de progression)
   if (job.kind === 'cart') renderCartProg();
   $('scanbox').hidden = false;
   $('stopBtn').hidden = false;
@@ -802,13 +837,12 @@ function renderProgress() {
     if (closedKey === key) {
       // message fermé avec ✕ : on ne le réaffiche pas pendant cette pause
     } else if (/1015/.test(job.pauseReason) && $('ban1015') && !$('banner').hidden) {
-      $('banWait').textContent = fmtDur(wait); $('banBack').textContent = back; // seul le compte à rebours change (les liens restent cliquables)
+      if ($('banWait')) $('banWait').textContent = fmtDur(wait); if ($('banBack')) $('banBack').textContent = back; // seul le compte à rebours change (les liens restent cliquables)
     } else if (/1015/.test(job.pauseReason)) {
       bannerHtml(`<b id="ban1015">⏸ Erreur 1015 : ${CM_LINK} t'a bloqué temporairement.</b><br>
         <b>Raison :</b> trop de requêtes en peu de temps (protection anti-robot Cloudflare de ${CM_LINK}).<br>
-        <b>Il faut réessayer plus tard :</b> le scan fait une pause de <span id="banWait">${fmtDur(wait)}</span> (reprise vers <span id="banBack">${back}</span>) et repart tout seul, avec des requêtes plus espacées. Les cartes en cours gardent les offres déjà chargées, et le scan continue avec 50 offres par carte. Si c'est encore bloqué à la reprise, le scan s'arrête (les cartes déjà scannées sont gardées).<br>
         <b>Pendant la pause :</b> ne recharge pas ${CM_LINK}, ça peut prolonger le blocage. Tu peux continuer à regarder tes cartes et calculer le panier avec ce qui est déjà scanné.<br>
-        <b>Si ça revient souvent :</b> baisse « Cartes scannées en même temps » dans les Réglages, ou scanne tes cartes par catégorie plutôt que tout d'un coup.<br>
+        <b>${esc(warn1015Text())}</b><br>
         <a href="https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1015/" target="_blank">En savoir plus sur l'erreur 1015 (Cloudflare)</a>`, key);
     } else {
       banner(`⏸ ${job.pauseReason || 'Cardmarket freine'}. Pause de ${fmtDur(wait)} (reprise vers ${back}), le scan repart tout seul. Les requêtes seront ensuite plus espacées.`, key);
@@ -987,7 +1021,7 @@ async function inWorker(func, args = []) {
 const docOf = (res) => new DOMParser().parseFromString((res && res.text) || '', 'text/html');
 const wantIds = (doc) => [...new Set([...doc.querySelectorAll('[data-id-want]')].map((e) => e.getAttribute('data-id-want')))];
 
-async function runCompare() {
+async function runCompare(opts = {}) {
   logAction('Comparaison Cardmarket lancée');
   if (job.active) return banner(T('Un scan ou un ajout est déjà en cours, attends la fin.'));
   if (!lastResult) return;
@@ -995,7 +1029,7 @@ async function runCompare() {
   const byGame = {};
   lines.forEach((l) => { const it = list[l.id]; if (!it) return; const g = (it.url || '').split('/')[2] || l.game; (byGame[g] = byGame[g] || []).push(it); });
   const games = Object.keys(byGame);
-  if (!confirm(TF('Comparer avec le Shopping Wizard de Cardmarket ?\n\nLa liste de souhaits « {l} » de ton compte Cardmarket sera vidée puis remplie avec tes {n} cartes, puis le Shopping Wizard sera lancé (rien n\'est acheté).', { l: games.map(wantsListName).join(' », « '), n: lines.length }))) return;
+  if (!opts.noConfirm && !confirm(TF('Comparer avec le Shopping Wizard de Cardmarket ?\n\nLa liste de souhaits « {l} » de ton compte Cardmarket sera vidée puis remplie avec tes {n} cartes, puis le Shopping Wizard sera lancé (rien n\'est acheté).', { l: games.map(wantsListName).join(' », « '), n: lines.length }))) return;
   try { chrome.permissions.request({ origins: [ORIGIN + '/*'] }).catch(() => {}); } catch {}
   Object.assign(job, { active: true, queue: [], running: new Map(), done: 0, total: lines.length + games.length * 3, failed: [], pausedUntil: 0, strikes: 0,
     challenge: null, loggedOut: false, t0: Date.now(), durations: [], nextReq: 0, gap: CART_GAP, workerTab: null, workerOpened: 0,
@@ -1163,6 +1197,8 @@ async function runCompare() {
       // 5) on lit le résumé : articles recherchés, valeur, articles trouvés, frais de port, commandes, total
       const rd = docOf(await request(resUrl));
       const dd = [...(rd.querySelector('dl')?.querySelectorAll('dd') || [])].map((x) => x.textContent.trim());
+      const nWiz = await importWizardOffers(rd);
+      if (nWiz) logAction(`Offres du Shopping Wizard ajoutées au calcul : ${nWiz}`);
       if (dd.length < 6) throw new Error(T('résultats du Shopping Wizard illisibles'));
       // utilisations du jour : on compte les résultats d'aujourd'hui dans l'historique du Shopping Wizard (= ton compte)
       try {
@@ -1191,7 +1227,302 @@ async function runCompare() {
     logAction(`Comparaison Cardmarket terminée : ${cmCompare.found}/${cmCompare.wanted} articles, total ${euro(cmCompare.total)}`);
     banner(null);
   } else { logAction('Comparaison Cardmarket impossible : ' + (error || '?'), 'erreur'); banner('⚖ ' + T('Comparaison Cardmarket impossible :') + ' ' + (error || '?') + ` [${BUILD}]`); }
-  renderBest();
+  if (!opts.chain) await refreshBest(); // les offres du Shopping Wizard sont dans le calcul : on recalcule
+  const missW = !error && lastResult && wizardMissing(lastResult.r, lastResult.lines);
+  if (missW && !opts.chain) bannerHtml(`⚠ ${esc(TF('Le Shopping Wizard n\'a pas toutes tes cartes ({a} article(s) sur {b}) : sa comparaison est faussée (détails dans la tuile « Tu économises »).', { a: missW.found, b: missW.expected }))}`);
+}
+
+// « Vérifier chez les vendeurs » : le scan ne voit que les offres les moins chères de chaque carte (sur une carte à 0,02 €,
+// des dizaines de vendeurs ont le même prix et beaucoup n'apparaissent pas). Pour chaque vendeur du meilleur panier
+// (et ceux du Shopping Wizard), on regarde dans SON stock les autres cartes de ta liste : regrouper chez un vendeur
+// déjà choisi évite un envoi. Puis on recalcule ; on recommence si de nouveaux vendeurs apparaissent (3 tours max).
+// Barème de « Vérifier chez les vendeurs » : de 1 (juste le Shopping Wizard) à 5 (le plus complet, le plus long)
+const STOCK_LEVELS = [null,
+  ['Cardmarket seul', 'Ajoute juste les vendeurs du Shopping Wizard, sans fouiller de stock.'],
+  ['Ton panier', 'Fouille le stock des vendeurs de ton meilleur panier.'],
+  ['Panier + Cardmarket', 'Les vendeurs de ton panier et ceux du Shopping Wizard.'],
+  ['Plus large', 'En plus, les 30 vendeurs qui ont déjà plusieurs de tes cartes.'],
+  ['Complet', 'En plus, les 3 moins chers de chaque carte, et un tour de plus (le plus long).'],
+];
+const stockLevel = () => Math.min(5, Math.max(1, +settings.stockLevel || 4));
+const stockRounds = (lv) => (lv <= 1 ? 0 : lv >= 5 ? 3 : 2);
+function stockSellerInfo() { // pays, note… de chaque vendeur, d'après ses offres déjà vues
+  const info = {};
+  for (const id of Object.keys(scans)) for (const o of [...(scans[id].offers || []), ...(scans[id].wiz?.offers || [])]) if (!info[o.seller] && o.country) info[o.seller] = o;
+  return info;
+}
+// vendeurs à vérifier, par ordre d'intérêt : ceux du panier, ceux du Shopping Wizard, puis les « potentiels » du scan :
+// ceux qui ont déjà le plus de tes cartes (ils peuvent tout regrouper) et les 3 moins chers de chaque carte
+function stockSellers(lv, round) {
+  const sellers = new Set();
+  if (lv < 2) return sellers;
+  lastResult.r.orders.forEach((o) => sellers.add(o.seller));
+  if (lv >= 3) for (const id of Object.keys(scans)) (scans[id].wiz?.offers || []).forEach((o) => sellers.add(o.seller));
+  if (round === 0 && lv >= 4) {
+    const cover = new Map();
+    for (const l of lastResult.lines) new Set(l.offers.map((o) => o.seller)).forEach((x) => cover.set(x, (cover.get(x) || 0) + 1));
+    [...cover.entries()].filter(([, n]) => n >= 2).sort((x, y) => y[1] - x[1]).slice(0, 30).forEach(([x]) => sellers.add(x));
+  }
+  if (round === 0 && lv >= 5) for (const l of lastResult.lines) [...new Map(l.offers.slice().sort((x, y) => x.price - y.price).map((o) => [o.seller, o])).keys()].slice(0, 3).forEach((x) => sellers.add(x));
+  return sellers;
+}
+// cartes à chercher chez chaque vendeur (pas celles dont le scan a déjà vu TOUTES les offres : rien de caché)
+function stockQueue(sellers, done, info) {
+  const bySeller = new Map();
+  for (const S of sellers) {
+    if (!info[S]) continue;
+    for (const l of lastResult.lines) {
+      const it = list[l.id];
+      if (!it || done.has(S + '|' + l.id)) continue;
+      done.add(S + '|' + l.id);
+      if (scans[l.id] && scans[l.id].partial === false) continue;
+      const has = [...(scans[l.id]?.offers || []), ...(scans[l.id]?.wiz?.offers || []), ...(scans[l.id]?.stock?.offers || [])].some((o) => o.seller === S);
+      if (!has) (bySeller.get(S) || bySeller.set(S, []).get(S)).push(it);
+    }
+  }
+  return bySeller;
+}
+// temps d'attente estimé pour un barème (au plus : les pages d'extension le raccourcissent souvent)
+function stockEstimate(lv) {
+  const n0 = lastResult.lines.length;
+  let n = 0;
+  if (lv >= 2) {
+    for (const its of stockQueue(stockSellers(lv, 0), new Set(), stockSellerInfo()).values()) n += its.length;
+    if (lv >= 3 && !wizardFresh()) n += 15 * n0; // vendeurs du Shopping Wizard, pas encore connus
+    n *= stockRounds(lv) >= 3 ? 1.15 : 1.05; // tours suivants (nouveaux vendeurs du panier)
+  }
+  return (wizardFresh() ? 0 : n0 * CART_GAP / 1000 + 15) + n / (maxPerMin() * 0.9 * Math.min(1, rateFactor())) * 60 + (lv >= 2 ? 15 : 5);
+}
+const wizardFresh = () => !!(lastResult && cmCompare && cmCompare.sig === compareSig(lastResult.lines) && Date.now() - cmCompare.date < 24 * 3600e3);
+// Fenêtre d'explication avant « Vérifier chez les vendeurs » : la comparaison avec Cardmarket est obligatoire
+function stockIntro() {
+  return new Promise((resolve) => {
+    let back = $('stockIntro');
+    if (!back) { back = document.createElement('div'); back.id = 'stockIntro'; back.className = 'wn-back'; document.body.appendChild(back); }
+    const games = [...new Set(lastResult.lines.map((l) => ((list[l.id]?.url || '').split('/')[2] || l.game)))];
+    back.innerHTML = `<div class="wn panel si" role="dialog" aria-modal="true" aria-labelledby="siTitle">
+      <button class="wn-x" data-si="0" title="${esc(T('Fermer'))}">✕</button>
+      <h2 id="siTitle">🔎 ${esc(T('Vérifier chez les vendeurs'))}</h2>
+      <p>${esc(T('Trouve un panier encore moins cher que le scan, en 3 étapes :'))}</p>
+      <ol>
+        ${wizardFresh() ? `<li><b>✓ ${esc(T('Comparer avec Cardmarket : déjà fait'))}</b><span>${esc(TF('Le Shopping Wizard a déjà été lancé pour cette liste il y a {t} : il n\'est pas relancé, la fouille commence directement.', { t: fmtDur((Date.now() - cmCompare.date) / 1000) }))}</span></li>` : `<li><b>${esc(T('Comparer avec Cardmarket (obligatoire)'))}</b><span>${esc(TF('Ta liste de souhaits « {l} » est vidée puis remplie avec tes {n} cartes, et le Shopping Wizard de Cardmarket est lancé. Il voit tout le site et ajoute ses vendeurs au calcul.', { l: games.map(wantsListName).join(' », « '), n: lastResult.lines.length }))}</span></li>`}
+        <li data-sistep="2"><b>${esc(T('Fouille des stocks'))}</b><span>${esc(T('L\'extension cherche tes autres cartes chez les vendeurs du panier, ceux du Shopping Wizard et les plus intéressants du scan, pour regrouper les commandes et payer moins de port.'))}</span></li>
+        <li><b>${esc(T('Nouveau meilleur panier'))}</b><span>${esc(T('Tout est recalculé avec les offres trouvées. Tu vois l\'ancien et le nouveau total.'))}</span></li>
+      </ol>
+      <div class="si-lv"><div class="si-lv-head"><b>${esc(T('Barème'))}</b><span class="si-eta"></span></div>
+        <div class="si-lv-btns">${[1, 2, 3, 4, 5].map((n) => `<button class="btn ghost sm" data-silv="${n}">${n}</button>`).join('')}</div>
+        <div class="si-lv-txt"></div></div>
+      <p class="si-note">${esc(T('Rien n\'est acheté. Tu peux arrêter quand tu veux : le calcul se fait avec ce qui a déjà été vérifié.'))}</p>
+      <div class="wn-foot"><button class="btn ghost" data-si="0">${esc(T('Annuler'))}</button><button class="btn primary" data-si="1">${esc(T('Lancer'))}</button></div></div>`;
+    let lv = stockLevel();
+    const showLv = () => {
+      back.querySelectorAll('[data-silv]').forEach((b) => b.classList.toggle('on', +b.dataset.silv === lv));
+      back.querySelector('[data-sistep="2"]')?.classList.toggle('off', lv <= 1);
+      back.querySelector('.si-lv-txt').innerHTML = `<b>${lv} · ${esc(T(STOCK_LEVELS[lv][0]))}</b> — ${esc(T(STOCK_LEVELS[lv][1]))}`;
+      back.querySelector('.si-eta').textContent = '⏱ ' + TF('≈ {t} d\'attente', { t: fmtDur(Math.round(stockEstimate(lv))) });
+    };
+    const done = (ok) => { back.hidden = true; document.removeEventListener('keydown', key); if (ok) { settings.stockLevel = lv; saveSettings(); } resolve(ok); };
+    const key = (e) => { if (e.key === 'Escape') done(false); };
+    back.onclick = (e) => { const l = e.target.closest('[data-silv]'); if (l) { lv = +l.dataset.silv; return showLv(); } const b = e.target.closest('[data-si]'); if (b) done(b.dataset.si === '1'); else if (e.target === back) done(false); };
+    showLv();
+    document.addEventListener('keydown', key);
+    back.hidden = false;
+    back.querySelector('[data-si="1"]').focus();
+  });
+}
+async function checkSellerStocks() {
+  if (job.active) return banner(T('Un scan ou un ajout est déjà en cours, attends la fin.'));
+  if (!lastResult) return;
+  if (!(await stockIntro())) return;
+  $('stockTip')?.remove(); settings.stockTipAt = Date.now(); saveSettings(); // tu sais déjà à quoi il sert : l'astuce attend une semaine
+  const before = { total: lastResult.r.total, sellers: new Set(lastResult.r.orders.map((o) => o.seller)) };
+  // 1) Shopping Wizard de Cardmarket (obligatoire) : il voit tout le site et ajoute des vendeurs que le scan n'a pas vus
+  if (!wizardFresh()) { // déjà lancé pour cette liste (mêmes cartes, mêmes filtres) depuis moins de 24 h : on ne le refait pas
+    const t0 = Date.now();
+    await runCompare({ chain: true, noConfirm: true });
+    if (job.active) return;
+    if (!cmCompare || cmCompare.date < t0) return banner(T('La comparaison avec Cardmarket n\'a pas abouti : la vérification des stocks a besoin d\'elle pour fonctionner. Réessaie.'));
+    await refreshBest(); // calcul avec ses vendeurs, en partant de son panier
+    if (!lastResult) return;
+  }
+  // 2) puis le stock de chaque vendeur retenu (selon le barème), et 3) le meilleur panier final
+  const lv = stockLevel(), sellerInfo = stockSellerInfo();
+  Object.assign(job, { active: true, queue: [], running: new Map(), done: 0, total: 0, failed: [], pausedUntil: 0, strikes: 0,
+    challenge: null, loggedOut: false, t0: Date.now(), durations: [], nextReq: 0, gap: baseGap(), workerTab: null, workerOpened: 0,
+    lastErr: '', challenges: 0, probe: false, probeBusy: false, stopReason: '', pauseReason: '', kind: 'stock', cont: [], hit1015: false });
+  job.appTab = await chrome.tabs.getCurrent().catch(() => null);
+  logAction(`Vérification des stocks des vendeurs lancée (barème ${lv})`);
+  const done = new Set(), checked = new Set(); let added = 0, error = '';
+  // écran d'attente : barre, temps restant (le temps passé en pause captcha / frein ne compte pas) et bouton « Arrêter »
+  let pausedMs = 0, lastTick = Date.now(), stopReq = false, calcing = false;
+  const paint = () => {
+    const now = Date.now(), paused = !!job.challenge || job.pausedUntil > now;
+    if (paused) pausedMs += now - lastTick;
+    lastTick = now;
+    if (calcing) return;
+    if (stopReq) return busy(true, T('Arrêt… calcul du meilleur panier avec ce qui a déjà été vérifié'));
+    const spent = now - job.t0 - pausedMs, eta = job.done >= 6 && spent > 0 ? (job.total - job.done) * spent / job.done / 1000 : null;
+    const sub = job.challenge ? T('⏸ En pause : valide le captcha dans l\'onglet ouvert')
+      : job.pausedUntil > now ? `⏸ ${T('Cardmarket freine')} : ${fmtDur((job.pausedUntil - now) / 1000)}…`
+      : eta != null ? TF('≈ {t} restantes', { t: fmtDur(Math.max(1, eta)) }) : T('Estimation du temps restant…');
+    busy(true, TF('Vérification des stocks des vendeurs : {a} / {b}', { a: job.done, b: job.total }),
+      { pct: job.total ? job.done / job.total : 0, sub, paused, onStop: () => { stopReq = true; paint(); } });
+  };
+  const ticker = setInterval(paint, 500);
+  const calc = async () => { calcing = true; busy(true, T('Calcul du meilleur panier (recherche approfondie, quelques secondes)…')); await nextPaint(); await ensureShipTables(); compute(true); calcing = false; };
+  try {
+    for (let round = 0; round < stockRounds(lv) && job.active && !stopReq; round++) {
+      const queue = [...stockQueue(stockSellers(lv, round), done, sellerInfo).entries()];
+      if (!queue.length) break;
+      job.total += queue.reduce((a, [, its]) => a + its.length, 0); // au pire 1 recherche par carte ; moins avec les pages d'extension
+      paint();
+      const found = {};
+      const norm = (u) => String(u || '').replace(/^https?:\/\/[^/]+/, '').replace(/^\/[a-z]{2}\//, '/').split('?')[0];
+      const flat = (t) => String(t || '').toLowerCase().normalize('NFD').replace(/[^a-z0-9]/g, '');
+      // lit les offres d'une page de stock et garde celles des cartes cherchées ; renvoie les cartes trouvées
+      const readRows = (doc, S, want) => {
+        const got = new Set(), info = sellerInfo[S];
+        for (const r of doc.querySelectorAll('.article-row')) {
+          const it = want.get(norm(r.querySelector('a[href*="/Products/"]')?.getAttribute('href')));
+          if (!it) continue;
+          const tips = [...r.querySelectorAll('[aria-label], [data-bs-original-title]')].map((e) => e.getAttribute('aria-label') || e.getAttribute('data-bs-original-title') || '');
+          const price = parseEuro(r.querySelector('.price-container')?.textContent || '');
+          if (!isFinite(price)) continue;
+          (found[it.id] = found[it.id] || []).push({ seller: S, aid: (r.id.match(/(\d+)/) || [])[1] || '', price, qty: parseInt(r.querySelector('.item-count')?.textContent, 10) || 1,
+            country: info.country, cond: r.querySelector('.article-condition .badge')?.textContent.trim() || '', lang: tips.find((t) => LANG_CODE[t] || EN_TO_FR[t]) || '',
+            extra: tips.filter((t) => /^(Foil|Signed|Signé|Altered|Altéré)$/i.test(t)).join(', '), rating: info.rating, sales: info.sales || 0, tracked: info.tracked || 0, restricted: 0, stock: 1 });
+          got.add(it.id);
+        }
+        return got;
+      };
+      const get = async (url) => { const res = await request(url); if (res.login) throw new Error(T('tu n\'es pas connecté à Cardmarket')); return docOf(res); };
+      const pageOf = (doc) => { // nombre de pages et nom du paramètre (site= ou page=)
+        for (const k of ['site', 'page']) {
+          const n = [...doc.querySelectorAll(`a[href*="${k}="]`)].map((a) => +((a.getAttribute('href') || '').match(new RegExp(`[?&]${k}=(\\d+)`)) || [])[1] || 0);
+          if (n.some((x) => x > 1)) return { pages: Math.max(...n), key: k };
+        }
+        return { pages: 1, key: 'site' };
+      };
+      const diag = { exp: 0, noFilter: 0, tooBig: 0, saved: 0, selects: '' };
+      // Un vendeur, toutes ses cartes : quand plusieurs cartes viennent de la même extension, on lit son stock de cette
+      // extension page par page (si c'est moins de pages que de cartes à chercher) au lieu d'une recherche par carte
+      const worker = async () => {
+        while (queue.length && job.active && !stopReq) {
+          const [S, its] = queue.shift();
+          const groups = new Map(); // jeu + extension -> cartes
+          for (const it of its) { const p = norm(it.url).split('/'); const k = (p[1] || it.game || 'Riftbound') + '|' + (p[4] || ''); (groups.get(k) || groups.set(k, []).get(k)).push(it); }
+          const lang = (its[0].url || '').split('/')[1] || 'fr';
+          let expIds = null; // extensions proposées par le filtre de la page du vendeur : nom -> id
+          for (const [k, group] of groups) {
+            if (!job.active || stopReq) break;
+            const [game, expSlug] = k.split('|');
+            const base = `${ORIGIN}/${lang}/${game}/Users/${encodeURIComponent(S)}/Offers/Singles`;
+            const left = new Map(group.map((it) => [norm(it.url), it]));
+            const byName = async (it) => { readRows(await get(`${base}?name=${encodeURIComponent(String(it.name || '').replace(/\s*\([^)]*\)\s*$/, ''))}`), S, new Map([[norm(it.url), it]])); left.delete(norm(it.url)); job.done++; };
+            if (left.size >= 3 && !expIds) { // 1re recherche normale : sa page donne aussi la liste des extensions du filtre
+              const it = group[0];
+              const doc = await get(`${base}?name=${encodeURIComponent(String(it.name || '').replace(/\s*\([^)]*\)\s*$/, ''))}`);
+              readRows(doc, S, new Map([[norm(it.url), it]])); left.delete(norm(it.url)); job.done++;
+              expIds = new Map();
+              for (const sel of doc.querySelectorAll('select[name]')) for (const o of sel.options) { const t = flat(o.textContent.replace(/\([^)]*\)|\[[^\]]*\]/g, '')); if (o.value && o.value !== '0' && t && !expIds.has(t)) expIds.set(t, [sel.name, o.value]); }
+              if (!diag.selects) diag.selects = [...doc.querySelectorAll('select[name]')].map((x) => x.name + '(' + x.options.length + ')').join(', ') || 'aucun menu';
+            }
+            const idExp = expIds && expIds.get(flat(expSlug));
+            if (expIds && !idExp && left.size >= 3) diag.noFilter++;
+            if (idExp && left.size >= 3) {
+              const n0 = left.size, url = `${base}?${encodeURIComponent(idExp[0])}=${encodeURIComponent(idExp[1])}`;
+              const doc = await get(url);
+              readRows(doc, S, left).forEach((id) => { for (const [h, it] of left) if (it.id === id) left.delete(h); });
+              const { pages, key } = pageOf(doc), rows = doc.querySelectorAll('.article-row').length;
+              diag.exp++;
+              // (1 seule page sans pagination : on n'y croit que si elle est courte, sinon on finit carte par carte)
+              if (rows && (pages > 1 || rows < 20) && pages - 1 < left.size) { // lire les pages suivantes coûte moins que chercher les cartes restantes
+                const want = new Map(left);
+                for (let p = 2; p <= pages && job.active && !stopReq; p++) readRows(await get(`${url}&${key}=${p}`), S, want).forEach((id) => { for (const [h, it] of left) if (it.id === id) left.delete(h); });
+                job.done += pages; job.total -= n0 - pages; diag.saved += n0 - pages; // n0 cartes vérifiées en « pages » requêtes
+                left.clear();
+              } else { job.done += 1 + n0 - left.size; job.total += 1; diag.tooBig++; } // (requête en plus ; les cartes trouvées sur cette page sont faites)
+            }
+            for (const it of [...left.values()]) { if (!job.active || stopReq) break; await byName(it); }
+          }
+          checked.add(S);
+        }
+      };
+      await Promise.all(Array.from({ length: 6 }, worker).map((p) => p.catch((e) => { if (!error) error = e.message === 'stop' ? (job.stopReason || T('arrêté')) : e.message; job.active = false; })));
+      logAction(`Stocks, tour ${round + 1} : ${queue.length ? 'arrêté' : 'fini'} · pages d'extension ${diag.exp} (trop longues ${diag.tooBig}, ${diag.saved} recherche(s) évitée(s)) · extension absente du filtre ${diag.noFilter} · menus de la page vendeur : ${diag.selects || '—'}`);
+      for (const [id, offers] of Object.entries(found)) {
+        const s = scans[id], prev = s.stock && Date.now() - s.stock.date < 24 * 3600e3 ? s.stock.offers : [];
+        const keys = new Set(offers.map(artKey));
+        s.stock = { date: Date.now(), offers: prev.filter((o) => !keys.has(artKey(o))).concat(offers) };
+        added += offers.length;
+        await chrome.storage.local.set({ ['scan_' + id]: s });
+      }
+      if (job.active) await calc(); // (aussi après « Arrêter » : calcul avec ce qui a déjà été vérifié)
+    }
+  } catch (e) { error = e.message; }
+  clearInterval(ticker);
+  const stopped = stopReq && !error, a = job.done, b = job.total;
+  job.active = false; job.kind = ''; job.running.clear();
+  $('scanbox').hidden = true; $('stopBtn').hidden = true;
+  if (job.workerTab != null) { chrome.tabs.remove(job.workerTab).catch(() => {}); job.workerTab = null; }
+  busy(false);
+  backToApp();
+  logAction(`Vérification des stocks terminée : ${a} recherche(s), ${added} offre(s) ajoutée(s)` + (stopped ? ' · arrêtée' : '') + (error ? ' · ' + error : ''), error ? 'erreur' : 'info');
+  await refreshBest();
+  const main = error ? '⚠ ' + error
+    : lv <= 1 ? T('Vendeurs du Shopping Wizard ajoutés au calcul (barème 1 : sans fouille des stocks).')
+    : (stopped ? TF('Arrêté à {a} / {b}.', { a, b }) + ' ' : '') + TF('Stocks vérifiés chez {n} vendeur(s) : {a} offre(s) en plus prises en compte.', { n: checked.size, a: added });
+  let gain = '';
+  if (lastResult && isFinite(before.total)) {
+    const r = lastResult.r, d = Math.round((before.total - r.total) * 100) / 100;
+    const fresh = [...new Set(r.orders.map((o) => o.seller))].filter((x) => !before.sellers.has(x));
+    const names = fresh.slice(0, 4).join(', ') + (fresh.length > 4 ? ` +${fresh.length - 4}` : '');
+    gain = `<div class="banner-gain${d > 0.004 ? '' : ' same'}">💶 ${esc(euro(before.total))} → <b>${esc(euro(r.total))}</b>`
+      + (d > 0.004 ? ` (−${esc(euro(d))})` : ` · ${esc(T('déjà le meilleur panier'))}`)
+      + (fresh.length ? ` · ${esc(T('Nouveaux vendeurs :'))} ${esc(names)}` : '') + '</div>';
+  }
+  const missW = lastResult && wizardMissing(lastResult.r, lastResult.lines);
+  const warn = missW ? `<div class="banner-warn">⚠ ${esc(TF('Le Shopping Wizard n\'a pas toutes tes cartes ({a} article(s) sur {b}) : sa comparaison est faussée (détails dans la tuile « Tu économises »).', { a: missW.found, b: missW.expected }))}</div>` : '';
+  bannerHtml(esc(main).replace(/\bCardmarket\b/g, CM_LINK) + gain + warn);
+}
+
+// Les vendeurs choisis par le Shopping Wizard (Cardmarket voit TOUS les stocks, le scan seulement les offres les moins chères)
+// sont ajoutés aux offres de chaque carte : le meilleur panier les prend en compte et ne peut pas être plus cher que le
+// sien (à filtres égaux). Rangés à part (s.wiz) : un nouveau scan les garde 24 h.
+async function importWizardOffers(rd) {
+  const byProduct = {};
+  items().forEach((it) => { byProduct[String(it.idProduct || it.id)] = it.id; });
+  const add = {};
+  for (const card of rd.querySelectorAll('.detailed-result-card')) {
+    const seller = card.querySelector('.seller-name a[href*="/Users/"]')?.textContent.trim();
+    if (!seller) continue;
+    const tips = [...card.querySelectorAll('[aria-label], [data-bs-original-title]')].map((e) => e.getAttribute('aria-label') || e.getAttribute('data-bs-original-title') || '');
+    const locEl = card.querySelector('.seller-name [aria-label*=":"], .seller-name [data-bs-original-title*=":"]');
+    const country = ((locEl && (locEl.getAttribute('aria-label') || locEl.getAttribute('data-bs-original-title'))) || '').split(':').pop().trim();
+    const rating = ((card.querySelector('[class*="fonticon-seller-rating-"]')?.className || '').match(/fonticon-seller-rating-([a-z-]+)/) || [])[1] || '';
+    const tracked = tips.some((t) => /suivi est obligatoire|tracked shipping is (required|mandatory)|versand.*pflicht|seguimiento.*obligatori|tracciat.*obbligator/i.test(t)) ? 1 : 0;
+    for (const tr of card.querySelectorAll('table tbody tr')) {
+      const td = tr.querySelectorAll('td');
+      const pid = ((tr.querySelector('.thumbnail-icon')?.getAttribute('data-bs-title') || '').match(/\/(\d+)\/\d+\.(?:jpg|png|webp)/i) || [])[1];
+      const id = pid && byProduct[pid];
+      if (!id || !scans[id]) continue;
+      const rowTips = [...tr.querySelectorAll('[aria-label], [data-bs-original-title]')].map((e) => e.getAttribute('aria-label') || e.getAttribute('data-bs-original-title') || '');
+      const lang = rowTips.find((t) => LANG_CODE[t] || EN_TO_FR[t]) || '';
+      const extra = rowTips.filter((t) => /^(Foil|Signed|Signé|Altered|Altéré|Playset)$/i.test(t)).join(', ');
+      const price = parseEuro(td[td.length - 1]?.textContent || '');
+      if (!isFinite(price)) continue;
+      (add[id] = add[id] || []).push({ seller, aid: tr.querySelector('[data-id-article]')?.getAttribute('data-id-article') || '', price, qty: parseInt(td[2]?.textContent, 10) || 1,
+        country, cond: tr.querySelector('.article-condition .badge')?.textContent.trim() || '', lang, extra, rating, sales: 0, tracked, restricted: 0, wiz: 1 });
+    }
+  }
+  let n = 0;
+  for (const [id, offers] of Object.entries(add)) {
+    const s = scans[id];
+    s.wiz = { date: Date.now(), offers };
+    n += offers.length;
+    await chrome.storage.local.set({ ['scan_' + id]: s });
+  }
+  return n;
 }
 
 // Le Shopping Wizard n'a pas d'option « envoi suivi » : il compte toujours l'envoi le moins cher.
@@ -1227,6 +1558,57 @@ function wizardHint() {
 }
 
 // tuile « Tu économises (vs comparateur de prix du site) »
+// le Shopping Wizard reste moins cher : pourquoi ? (ses vendeurs que tes filtres excluent)
+// Cartes qui manquent au Shopping Wizard (pas ajoutées à la liste de souhaits, ou introuvables pour lui) :
+// son total ne les compte pas, la comparaison serait faussée -> on prévient et on compare à cartes égales
+function wizardMissing(r, lines) {
+  if (!cmCompare) return null;
+  const expected = lines.reduce((a, l) => a + (+l.qty || 1), 0);
+  const fresh = (id) => { const w = scans[id]?.wiz; return w && w.date >= cmCompare.date - 30 * 60e3 && w.offers.length; };
+  const anyWiz = lines.some((l) => fresh(l.id));
+  const names = anyWiz ? lines.filter((l) => !fresh(l.id)).map((l) => l.name || list[l.id]?.name || l.id) : [];
+  const ids = new Set(anyWiz ? lines.filter((l) => !fresh(l.id)).map((l) => l.id) : []);
+  const notAdded = cmCompare.results.flatMap((x) => x.missing || []);
+  const short = Math.max(expected - cmCompare.found, 0);
+  if (!short && !names.length && !notAdded.length) return null;
+  let cost = 0; // ce que ces cartes coûtent dans ton panier (sans le port)
+  for (const o of r.orders) for (const x of o.lines) if (ids.has(x.line.id)) cost += x.opt.cost;
+  return { expected, found: cmCompare.found, names, notAdded, cost };
+}
+function wizardMissingHtml(r, lines) {
+  const m = wizardMissing(r, lines);
+  if (!m) return '';
+  const list5 = (a) => esc(a.slice(0, 5).join(', ') + (a.length > 5 ? ` +${a.length - 5}` : ''));
+  const fair = m.cost > 0.005 ? cmTotal() - (r.total - m.cost) : null;
+  return `<div class="k danger cmp-miss">⚠ ${esc(TF('Le Shopping Wizard n\'a pas toutes tes cartes ({a} article(s) sur {b}) : son total ne les compte pas, la comparaison est faussée.', { a: m.found, b: m.expected }))}
+    ${m.names.length ? `<br>${esc(T('Absentes chez lui :'))} ${list5(m.names)}` : ''}
+    ${m.notAdded.length ? `<br>${esc(T('Pas ajoutées à la liste de souhaits :'))} ${list5(m.notAdded)}` : ''}
+    ${fair != null ? `<br><b>${esc(fair >= 0 ? TF('À cartes égales : environ {d} d\'économie', { d: euro(fair) }) : TF('À cartes égales : environ {d} de plus que Cardmarket', { d: euro(-fair) }))}</b>` : ''}</div>`;
+}
+function wizardWhy(lines) {
+  const why = { note: new Set(), pays: new Set(), langue: new Set(), etat: new Set(), bloque: new Set() };
+  for (const l of lines) {
+    const it = list[l.id], w = scans[l.id]?.wiz;
+    if (!it || !w) continue;
+    const langs = effLangs(it), minC = cardCond(it);
+    for (const o of w.offers) {
+      if ((RATING_RANK[o.rating] || 0) < (+settings.minRating || 0)) why.note.add(o.seller);
+      else if (!inScope(o)) why.pays.add(o.seller);
+      else if (langs.length && !langs.includes(langOf(o))) why.langue.add(o.seller);
+      else if (minC && (COND_RANK[o.cond] || 9) > COND_RANK[minC]) why.etat.add(o.seller);
+      else if (blocked[o.seller]) why.bloque.add(o.seller);
+    }
+  }
+  const parts = [];
+  if (why.note.size) parts.push(TF('{n} vendeur(s) sous ta note minimale', { n: why.note.size }));
+  if (why.pays.size) parts.push(TF('{n} vendeur(s) hors de tes pays', { n: why.pays.size }));
+  if (why.langue.size) parts.push(TF('{n} vendeur(s) dans une autre langue', { n: why.langue.size }));
+  if (why.etat.size) parts.push(TF('{n} vendeur(s) sous ton état minimum', { n: why.etat.size }));
+  if (why.bloque.size) parts.push(TF('{n} vendeur(s) que tu as bloqué(s)', { n: why.bloque.size }));
+  if (parts.length) return TF('Le Shopping Wizard reste moins cher car il utilise des vendeurs que tes filtres excluent : {l}. Assouplis ces filtres dans Réglages pour avoir les mêmes.', { l: parts.join(', ') });
+  return T('Le Shopping Wizard reste moins cher : relance « Comparer avec Cardmarket » après ton dernier scan, puis « 🔎 Vérifier chez les vendeurs ». S\'il reste un écart, ce sont les frais de port estimés (Cardmarket précise qu\'ils peuvent varier selon l\'envoi choisi).');
+}
+
 function compareTile(r, lines) {
   const ok = cmCompare && cmCompare.sig === compareSig(lines);
   if (!ok) return `<div class="tile cmp"><div class="k">${esc(T('Tu économises (vs comparateur de prix du site)'))}</div>
@@ -1235,12 +1617,13 @@ function compareTile(r, lines) {
   const cmT = cmTotal(), extra = cmTrackedExtra();
   const diff = cmT - r.total;
   const links = cmCompare.results.map((x) => `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(cmCompare.results.length > 1 ? x.game : T('Voir les résultats Cardmarket'))} ↗</a>`).join(' · ');
-  const miss = cmCompare.found < cmCompare.wanted;
+  const missHtml = wizardMissingHtml(r, lines);
   return `<div class="tile cmp"><div class="k">${esc(T('Tu économises (vs comparateur de prix du site)'))}</div>
     <div class="v" style="color:${diff > 0.005 ? 'var(--ok)' : diff < -0.005 ? '#f87171' : 'var(--mut)'}">${diff > 0.005 ? euro(diff) : diff < -0.005 ? '− ' + euro(-diff) : '0 €'}</div>
     <div class="k" style="margin-top:4px">${esc(TF('Shopping Wizard Cardmarket : {a}', { a: euro(cmT) }))} · ${links}</div>
     ${extra > 0.005 ? `<div class="k" style="margin-top:2px">${esc(TF('dont {a} pour passer ses envois en lettre suivie, comme ton panier', { a: euro(extra) }))}</div>` : ''}
-    ${miss ? `<div class="k danger" style="margin-top:4px">${esc(TF('Cardmarket ne trouve pas certaines cartes : {a} article(s) sur {b}.', { a: cmCompare.found, b: cmCompare.wanted }))}</div>` : ''}
+    ${missHtml}
+    ${diff < -0.005 && !missHtml ? `<div class="k cmp-why">⚠ ${esc(wizardWhy(lines))}</div>` : ''}
     ${wizardHint()}
     <button class="btn ghost xs" data-cmcompare title="${esc(T('Relancer la comparaison'))}">↻</button></div>`;
 }
@@ -1250,7 +1633,7 @@ let scanEstimateCount = 0;
 const SCAN_MODE_TXT = {
   fast: ['⚡ Rapide', '50 offres par carte : les moins chères.', '⚡ Rapide'],
   medium: ['🎯 Moyen', '150 à 350 offres par carte : plus de pages quand les prix sont serrés et que ça peut faire baisser ton panier.', '🎯 Moyen'],
-  long: ['🔍 Long (recommandé au moment de l\'achat)', '250 à 750 offres par carte : ton pays découpé (particuliers, pros, langues) puis chaque pays un par un.', '🔍 Long'],
+  long: ['🔍 Long (par défaut, recommandé)', '250 à 750 offres par carte : ton pays découpé (particuliers, pros, langues), les gros pays un par un, et les petits pays regroupés (redécoupés s\'ils ont beaucoup d\'offres).', '🔍 Long'],
 };
 function renderScanMode() {
   const el = $('scanEstimate'); if (!el) return;
@@ -1534,17 +1917,39 @@ const shipTableFor = (country) => {
 };
 
 // ---------- Vue : Meilleur panier ----------
-function compute() {
-  const lines = items()
+// « empreinte » de tout ce qui change le meilleur panier : cartes cochées, quantités, offres (filtrées), réglages, tarifs.
+// Même empreinte qu'au dernier calcul = même résultat : pas besoin de recalculer en ouvrant « Meilleur panier ».
+function bestLines() {
+  return items()
     .filter((it) => it.checked && scans[it.id])
     .map((it) => ({ id: it.id, name: it.name, sub: it.sub, game: it.game, url: it.url, qty: it.qty, offers: filteredOffers(it, effLangs(it)) }));
-  lastResult = lines.length ? { r: Optimizer.optimize(lines, { ...settings, shipTableFor, customsFor, deep: true, searchMs: 12000 }), lines, date: Date.now() } : null;
+}
+function bestSig(lines) {
+  const st = Object.keys(settings).filter((k) => !/avg|time|seen|tuto|cmWants|log|uiLang|view|zoom|width|banner|v1\d\d/i.test(k)).sort().map((k) => k + '=' + JSON.stringify(settings[k])).join(';');
+  const sh = Object.keys(shipTables).sort().map((k) => k + ':' + (Array.isArray(shipTables[k]) ? shipTables[k].length : '')).join(',');
+  const ln = lines.map((l) => l.id + 'x' + l.qty + ':' + l.offers.map((o) => artKey(o) + '@' + o.price + '/' + o.qty).join(',')).join('|');
+  let h = 5381; const str = st + '#' + sh + '#' + ln;
+  for (let i = 0; i < str.length; i++) h = ((h * 33) ^ str.charCodeAt(i)) >>> 0;
+  return h + ':' + str.length;
+}
+function compute(force) {
+  const lines = bestLines();
+  const sig = bestSig(lines);
+  if (!force && lastResult && lastResult.sig === sig) return false; // rien n'a changé : on garde le résultat
+  // le panier précédent sert aussi de départ : avec plus d'offres (Wizard, stocks vérifiés), le total ne peut que baisser ou rester pareil
+  let prevSeed = null;
+  if (lastResult) { prevSeed = {}; lastResult.r.orders.forEach((o) => o.lines.forEach(({ line }) => { if (!prevSeed[line.id]) prevSeed[line.id] = o.seller; })); }
+  // le panier du Shopping Wizard (s'il a été lancé) sert de point de départ : on ne peut faire que mieux ou pareil
+  const seed = {};
+  lines.forEach((l) => { const w = scans[l.id]?.wiz; if (w && Date.now() - w.date < 24 * 3600e3 && w.offers[0]) seed[l.id] = w.offers[0].seller; });
+  lastResult = lines.length ? { r: Optimizer.optimize(lines, { ...settings, shipTableFor, customsFor, deep: true, searchMs: 12000, seeds: [Object.keys(seed).length ? seed : null, prevSeed] }), lines, date: Date.now(), sig } : null;
   // on garde le plan pour entourer en vert les bons vendeurs sur les pages Cardmarket
   if (lastResult) {
     const cards = {};
     lastResult.r.orders.forEach((o) => o.lines.forEach(({ line, opt }) => { cards[line.id] = { seller: o.seller, price: opt.picked[0] ? opt.picked[0].price : opt.cost }; }));
     chrome.storage.local.set({ cmPlan: { date: Date.now(), cards, sellers: lastResult.r.orders.map((o) => o.seller) } });
   }
+  return true;
 }
 
 function sellerUrl(seller, game) {
@@ -1564,6 +1969,31 @@ function bestLangBar() {
     <div class="chips">${names.map((n) => `<span class="chip ${chosen.includes(n) ? 'on' : ''}" data-blang="${esc(n)}" title="${esc(TF('{a} carte(s) sur {b} ont des offres dans cette langue', { a: nCards[n] || 0, b: its.length }))}">${esc(LANG_CODE[n] || n)} <i>${nCards[n] || 0}/${its.length}</i></span>`).join('')}
     <span class="chip ${chosen.length ? '' : 'on'}" data-blang="" title="${esc(T('Utilise la langue choisie pour chaque carte dans ta liste'))}">${esc(T('Comme dans ma liste'))}</span></div></div>
     <p class="hint">${esc(T('Change la langue sans tout re-scanner : si une carte a pu manquer des offres dans cette langue, seules ces cartes sont re-scannées dans cette langue (quelques secondes), pour avoir vraiment le meilleur prix.'))}</p></div>`;
+}
+
+// bulle dorée (1 fois par semaine) à côté de « Vérifier chez les vendeurs »
+function stockTip() {
+  const b = $('stockBtn');
+  if (!b || !lastResult || $('v-best').hidden || document.getElementById('stockTip')) return;
+  if (settings.stockTipAt && Date.now() - settings.stockTipAt < 7 * 24 * 3600e3) return;
+  settings.stockTipAt = Date.now(); saveSettings();
+  const tip = document.createElement('div');
+  tip.id = 'stockTip'; tip.className = 'gold-tip';
+  tip.innerHTML = `<button class="gt-x" title="${esc(T('Fermer'))}">✕</button><b>🔎 ${esc(T('Astuce : Vérifier chez les vendeurs'))}</b>
+    <p>${esc(T('À faire après ton scan : il ajoute les vendeurs de Cardmarket, fouille leurs stocks et ceux des vendeurs déjà enregistrés pour trouver des liaisons que le scan n\'a pas vues, puis un panier encore moins cher.'))}</p>`;
+  document.body.appendChild(tip);
+  // à droite du bouton ; s'il n'y a pas la place, juste en dessous
+  const place = () => {
+    const r = b.getBoundingClientRect(), w = tip.offsetWidth;
+    const right = r.right + 12 + w <= window.innerWidth - 8;
+    tip.classList.toggle('below', !right);
+    tip.style.left = (right ? r.right + 12 : Math.max(8, r.right - w)) + window.scrollX + 'px';
+    tip.style.top = (right ? r.top - 4 : r.bottom + 10) + window.scrollY + 'px';
+  };
+  place(); window.addEventListener('resize', place);
+  const close = () => { tip.remove(); window.removeEventListener('resize', place); };
+  tip.querySelector('.gt-x').onclick = close;
+  document.querySelectorAll('.nav').forEach((n) => n.addEventListener('click', close, { once: true }));
 }
 
 function renderBest() {
@@ -1669,6 +2099,7 @@ function renderBest() {
 
 // ---------- Vue : Réglages ----------
 function renderSettings() {
+  const w15 = $('warn1015'); if (w15) { w15.hidden = freq1015() < 1; w15.textContent = warn1015Text(); }
   document.querySelectorAll('[data-s]').forEach((el) => {
     const v = settings[el.dataset.s];
     if (el.type === 'checkbox') el.checked = !!v; else el.value = v ?? '';
@@ -1730,10 +2161,27 @@ function switchView(v) {
   if (v === 'shipping') renderShipping();
 }
 // écran « calcul en cours » : le calcul bloque la page quelques secondes, on le montre (et on évite les clics partout)
-function busy(on, txt) {
+let busyStop = null;
+function busy(on, txt, prog) { // prog = { pct, sub, paused, onStop } : barre de progression, temps restant et bouton « Arrêter »
   let el = $('busyOverlay');
-  if (!el) { el = document.createElement('div'); el.id = 'busyOverlay'; el.innerHTML = '<div class="busy-box"><span class="spinner"></span><b></b></div>'; document.body.appendChild(el); }
+  if (!el) {
+    el = document.createElement('div'); el.id = 'busyOverlay';
+    el.innerHTML = '<div class="busy-box"><div class="busy-row"><span class="spinner"></span><b></b></div><div class="busy-prog" hidden><div class="busy-bar"><i></i></div><div class="busy-sub"><small></small><button class="btn ghost sm busy-stop"></button></div></div></div>';
+    el.querySelector('.busy-stop').addEventListener('click', () => busyStop && busyStop());
+    document.body.appendChild(el);
+  }
   el.querySelector('b').textContent = txt || '';
+  const p = el.querySelector('.busy-prog');
+  p.hidden = !prog;
+  busyStop = prog?.onStop || null;
+  if (prog) {
+    p.querySelector('.busy-bar i').style.width = Math.round(Math.min(1, prog.pct || 0) * 1000) / 10 + '%';
+    p.querySelector('small').textContent = prog.sub || '';
+    const btn = p.querySelector('.busy-stop');
+    btn.hidden = !prog.onStop; btn.textContent = T('⏹ Arrêter et calculer');
+    btn.title = T('Arrête la vérification et calcule le meilleur panier avec ce qui a déjà été vérifié');
+  }
+  el.classList.toggle('paused', !!prog?.paused);
   el.hidden = !on;
 }
 // clic sur une image de carte (.zoomable) : on l'affiche en grand pour lire son texte ; clic ou Échap pour fermer
@@ -1749,18 +2197,21 @@ document.addEventListener('click', (e) => {
 }, true);
 document.addEventListener('keydown', (e) => { const z = $('zoomOverlay'); if (e.key === 'Escape' && z && !z.hidden) { z.hidden = true; e.stopPropagation(); } }, true);
 const nextPaint = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0))));
-let bestBusy = false, bestAgain = false;
-async function refreshBest() {
+let bestBusy = false, bestAgain = false, bestForce = false;
+async function refreshBest(force) {
+  if (force === true) bestForce = true;
   if (bestBusy) { bestAgain = true; return; } // un calcul est déjà en cours : on refera juste après
   bestBusy = true;
   try {
     do {
       bestAgain = false;
+      await ensureShipTables();
+      const f = bestForce; bestForce = false;
+      // rien n'a changé depuis le dernier calcul : on affiche directement le résultat (pas de chargement)
+      if (!f && lastResult && lastResult.sig === bestSig(bestLines())) { renderBest(); stockTip(); continue; }
       busy(true, T('Calcul du meilleur panier (recherche approfondie, quelques secondes)…'));
       await nextPaint(); // laisse le temps d'afficher le chargement avant de calculer
-      await ensureShipTables();
-      await nextPaint();
-      compute(); renderBest(); renderSettings();
+      compute(f); renderBest(); renderSettings(); stockTip();
     } while (bestAgain);
   } finally { busy(false); bestBusy = false; }
 }
@@ -1800,7 +2251,8 @@ $('bannerClose').addEventListener('click', () => { closedKey = bannerKey; $('ban
 document.querySelectorAll('.nav').forEach((b) => b.addEventListener('click', () => switchView(b.dataset.view)));
 $('qScan').addEventListener('input', renderScanned);
 $('calcBtn').addEventListener('click', () => switchView('best'));
-$('recalcBtn').addEventListener('click', refreshBest);
+$('recalcBtn').addEventListener('click', () => refreshBest(true));
+$('stockBtn').addEventListener('click', checkSellerStocks);
 // (tout cocher / décocher agit sur les cartes affichées : catégorie + recherche)
 // case dans l'en-tête : coche / décoche toutes les cartes affichées (catégorie + recherche)
 document.addEventListener('change', (e) => {
@@ -1956,6 +2408,7 @@ $('best').addEventListener('click', (e) => {
     const todo = L.length ? items().filter((it) => it.checked && needsLangTopUp(it, L)).map((it) => it.id) : [];
     if (todo.length && !job.active) {
       scanLangOverride = [...L];
+      topUpPrevMode = settings.scanMode; settings.scanMode = 'fast'; // complément : une page par carte dans cette langue suffit (quelques secondes)
       logAction(`Scan complémentaire en ${L.join(', ')} : ${todo.length} carte(s)`);
       startScan(todo);
       return banner(TF('Recherche des offres en {l} pour {n} carte(s), pour être sûr du meilleur prix…', { l: L.map((x) => LANG_CODE[x] || x).join('/'), n: todo.length }));
@@ -1983,6 +2436,10 @@ $('best').addEventListener('click', (e) => {
 document.addEventListener('change', (e) => {
   const k = e.target.dataset.s; if (!k) return;
   settings[k] = e.target.type === 'checkbox' ? e.target.checked : (k === 'defaultCond' ? e.target.value : parseFloat(e.target.value) || 0);
+  if (k === 'pagesPerMin') { // vitesse réglée : bornée, et appliquée tout de suite au scan en cours
+    settings.pagesPerMin = maxPerMin();
+    if (job.active && !job.hit1015) job.gap = job.kind === 'deck' ? baseGap() * 2 : baseGap();
+  }
   if (k === 'myCountry') { // nouveau pays de livraison : "mon pays" suit, et on charge ses tarifs
     followCountry();
     ensureShipTables().then(() => { renderSettings(); renderScanned(); });
@@ -2234,7 +2691,7 @@ function toggleSiteMenu(force) {
 $('sitePick').addEventListener('click', (e) => { e.stopPropagation(); toggleSiteMenu(); });
 
 // ---------- Version : clic sur « v1.2 » = les nouveautés (point jaune tant que tu ne les as pas vues) ----------
-const WHATS_NEW = [
+const WN_13 = [
   ['📥 Importer un deck', "Colle le lien d'un deck Riftbound (Piltover Archive ou Riftdecks) : les cartes sont trouvées sur Cardmarket et rangées dans une catégorie au nom du deck. Choisis « deck identique » ou « le moins cher possible » (avant → après, avec l'économie carte par carte)."],
   ['⚖ Comparaison avec Cardmarket', "Nouvelle tuile « Tu économises (vs comparateur de prix du site) » : l'extension lance le Shopping Wizard de Cardmarket avec les mêmes cartes et filtres (liste de souhaits « TCGPRICEHUNTER »), puis compare le total."],
   ['🛃 Sans frais de douane', "Remplace « Europe » : tous les pays d'où tu ne paies pas de douane vers chez toi, sans limite de prix. C'est le choix par défaut."],
@@ -2242,6 +2699,49 @@ const WHATS_NEW = [
   ['Meilleur panier encore plus malin', "L'optimiseur essaie aussi de regrouper des commandes entières et d'échanger des cartes entre vendeurs, et explique quand tout prendre chez un seul vendeur coûterait plus cher."],
   ['État minimum en un clic', "Menu avec les pastilles de couleur de Cardmarket : l'état choisi (et les meilleurs) s'applique à toutes tes cartes et aux prochaines. Nouveau bouton « Supprimer la sélection » en bas de la liste."],
   ['Choix du site et nouveau logo', "Le bouton du site montre les jeux compatibles (Cardmarket pour l'instant), le site est affiché pendant le scan, et l'extension a un nouveau logo."],
+];
+// Historique complet : toutes les nouveautés, version par version (la plus récente en haut)
+const CHANGELOG = [
+  ['1.40', [
+    ['🔎 Vérifier chez les vendeurs', "Lance la comparaison avec Cardmarket, ajoute ses vendeurs, fouille leurs stocks pour regrouper tes cartes et recalcule un panier encore moins cher. Barre de progression, temps restant, bouton « Arrêter » et ancien → nouveau total à la fin."],
+    ['📥 Decks Yu-Gi-Oh!, Pokémon et Magic', "Importe aussi les decks de YGOPRODeck, Limitless TCG et MTGGoldfish, en plus de Piltover Archive et Riftdecks."],
+    ['⚡ Moins de recalculs', "Le meilleur panier n'est recalculé que si quelque chose a changé (carte supprimée, nouveau scan, réglage…)."],
+    ['⚡ Scan Long plus rapide', "Les petits pays sont regroupés sur une seule page (redécoupés seulement s'ils ont beaucoup d'offres) et 5 cartes sont scannées en même temps au lieu de 3."],
+    ['🔍 Long par défaut', "Le scan Long est maintenant le mode par défaut, et son temps estimé tient compte de ce scan plus rapide."],
+    ['🎚 Barème de 1 à 5', "Choisis jusqu'où fouiller chez les vendeurs, avec le temps d'attente estimé avant de lancer."],
+    ['⏱ Pages par minute réglables', "Dans les Réglages : baisse-les si Cardmarket te bloque (erreur 1015), avec un avertissement dès la première erreur."],
+    ['⚠ Cartes manquantes chez Cardmarket', "Si le Shopping Wizard n'a pas toutes tes cartes, tu es prévenu et la comparaison se fait à cartes égales."],
+    ['📜 Historique des versions', "Ici : toutes les nouveautés, version par version."],
+  ]],
+  ['1.35', [
+    ['🏆 Meilleur panier plus poussé', "Recherche plus profonde : exacte sur les petites listes, quelques secondes de plus sur les grosses, jamais un moins bon résultat."],
+    ['🌐 Rescan de la langue choisie', "Quand tu choisis une langue, seules les cartes dont le scan a pu rater des offres dans cette langue sont rescannées, pour cette langue."],
+  ]],
+  ['1.34', [
+    ['📥 Import de deck à la carte', "En mode « le moins cher », coche « Garder l'original » sur une carte, change le nombre d'exemplaires ou supprime une carte avant d'ajouter le deck."],
+    ['🌐 Langue dans le meilleur panier', "Change la langue des cartes sans refaire de scan (parmi les langues déjà scannées)."],
+  ]],
+  ['1.33', [
+    ['✉ Lettre suivie sur le Shopping Wizard', "Sur la page de résultats du Shopping Wizard de Cardmarket, l'extension ajoute « Frais de port en lettre suivie » et « Total en lettre suivie » (pays et prix de chaque vendeur vérifiés avec les tarifs officiels), et la comparaison lit ce total."],
+  ]],
+  ['1.32', [
+    ['⚖ Comparaison à règles égales', "Avec « Toujours en lettre suivie », la comparaison avec Cardmarket compte aussi le port suivi : les deux paniers suivent les mêmes règles."],
+    ['Réglages', "Filtre « Ventes min. » retiré ; sur Firefox, un bouton pour autoriser l'accès à Cardmarket s'il manque."],
+  ]],
+  ['1.31', [
+    ['Tutoriel', "Une ✕ pour passer tout le tutoriel d'un coup."],
+  ]],
+  ['1.3', WN_13],
+  ['1.2', [
+    ['🇪🇺 Europe (frais réduits)', "Ne garde que les pays d'Europe dont le port + la douane vers chez toi restent bas (3,50 € maximum en moyenne). C'est le choix par défaut."],
+    ['Pays triés par frais', "Dans les Réglages, chaque pays affiche ce que coûte une commande depuis chez lui (port + douane), du moins cher au plus cher."],
+    ['Filtres appliqués avant de chercher', "Les pays des vendeurs (tous d'un coup), la réputation, la langue et l'état sont envoyés directement à Cardmarket : les offres reçues sont toutes utiles."],
+    ['Ton pays trouvé tout seul', "Le pays de livraison est deviné grâce au fuseau horaire et à la langue du navigateur, et tu peux le changer quand tu veux : il ne dépend plus de la langue de l'extension."],
+    ['Corrections', 'Frais de port des grosses commandes parfois faux après quelques jours, et derniers textes traduits dans toutes les langues.'],
+  ]],
+  ['1.1', [
+    ['🎉 Première version', "Scan des vendeurs de Cardmarket pour tes cartes, meilleur panier port compris, plusieurs pays de vendeurs et ajout au panier de ton compte en un clic."],
+  ]],
 ];
 let appVersion = '';
 function showWhatsNew() {
@@ -2255,16 +2755,18 @@ function showWhatsNew() {
   }
   back.innerHTML = `<div class="wn panel" role="dialog" aria-modal="true" aria-labelledby="wnTitle">
     <button class="wn-x" data-wnclose title="${esc(T('Fermer'))}">✕</button>
-    <h2 id="wnTitle">${esc(TF('Nouveautés de la version {v}', { v: appVersion }))}</h2>
-    <ul>${WHATS_NEW.map(([t, d]) => `<li><b>${esc(T(t))}</b><span>${esc(T(d))}</span></li>`).join('')}</ul>
+    <h2 id="wnTitle">${esc(T('Nouveautés'))}</h2>
+    <p class="wn-sub">${esc(T('Toutes les modifications, version par version.'))}</p>
+    ${CHANGELOG.map(([v, list]) => `<h3 class="wn-ver">v${esc(v)}${v === appVersion ? ` <em>${esc(T('actuelle'))}</em>` : ''}</h3>
+    <ul>${list.map(([t, d]) => `<li><b>${esc(T(t))}</b><span>${esc(T(d))}</span></li>`).join('')}</ul>`).join('')}
     <div class="wn-foot"><a href="https://github.com/Anastasiophrenelia/TCG-Price-Hunter/releases" target="_blank" rel="noopener">${esc(T('Toutes les versions sur GitHub'))} ↗</a>
     <button class="btn primary" data-wnclose>${esc(T('Fermer'))}</button></div></div>`;
   back.hidden = false;
-  back.querySelector('.wn .btn').focus();
+  back.querySelector('.wn .btn').focus(); back.querySelector('.wn').scrollTop = 0;
   if (settings.seenVersion !== appVersion) { settings.seenVersion = appVersion; saveSettings(); }
   $('verTag').classList.remove('new');
 }
-const BUILD = 'b2611-2030'; // numéro de version interne : visible dans les erreurs, pour savoir quelle copie tourne
+const BUILD = 'b2711-0040'; // numéro de version interne : visible dans les erreurs, pour savoir quelle copie tourne
 try {
   const m = (globalThis.browser || globalThis.chrome).runtime.getManifest();
   appVersion = m.version;
