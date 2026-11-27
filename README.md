@@ -29,12 +29,12 @@
 
 ## ✨ What it does
 
-1. **Add your cards**: click "➕ Add" on any Cardmarket card page, or import a whole deck from Piltover Archive or Riftdecks (up to 5 decks at once, one category each).
+1. **Add your cards**: click "➕ Add" on any Cardmarket card page, or import a whole deck from Piltover Archive, Riftdecks, YGOPRODeck, Limitless TCG or MTGGoldfish (up to 5 decks at once, one category each).
 2. **Choose what you accept**: card language, minimum condition, your delivery country and which sellers to keep (by country and rating). By default, only countries with no customs fees to you.
-3. **Scan**: the extension reads the offers of every card on Cardmarket. ⚡ Fast for a quick look, 🎯 Medium for everyday use, 🔍 Long to see the most sellers right before buying.
+3. **Scan**: the extension reads the offers of every card on Cardmarket. ⚡ Fast for a quick look, 🎯 Medium for everyday use, 🔍 Long (default) to see the most sellers right before buying.
 4. **Get the best basket**: it works out the cheapest combination of sellers with Cardmarket's real shipping rates (letter, tracked letter, parcel) and customs/import VAT when needed, and can split a card across several sellers when that's cheaper.
 5. **Check you're saving**: compare your basket with Cardmarket's own Shopping Wizard in one click.
-6. **Fill your cart**: everything goes into your Cardmarket cart in one click. Nothing is bought for you: you check, choose the shipping methods and pay on Cardmarket.
+6. **Fill your cart**: everything goes into your Cardmarket cart in one click, after cleaning out what isn't in the best basket. Nothing is bought for you: you check, choose the shipping methods and pay on Cardmarket.
 
 Also: interface in **8 languages** (English, French, German, Spanish, Italian, Portuguese, Dutch, Polish), categories, export / import of your cards and settings, an interactive tutorial on first launch, and an activity log for bug reports.
 
@@ -42,19 +42,28 @@ Works with every card sold on Cardmarket: Riftbound, Pokémon, Magic, One Piece,
 
 > ⚠️ Only add to your cart what you really plan to buy. Adding and removing cards over and over, or leaving them in the cart to hold them, can get your Cardmarket account banned.
 
-## 🆕 What's new in 1.3
+## 🆕 What's new in 1.41
 
-- **📥 Deck import**: paste up to 5 deck links (Piltover Archive, Riftdecks). Keep the exact printings, or take the cheapest version of each card (before → after view with your savings). Each deck gets its own category.
-- **⚖ Compare with Cardmarket**: runs Cardmarket's Shopping Wizard on the same cards and shows how much you save. Cardmarket allows 10 uses per day per account: a counter shows what's left.
-- **3 scan modes**: ⚡ Fast (50 offers per card), 🎯 Medium (default) and 🔍 Long (the most sellers, best right before buying). "Show more results" is no longer clicked: filtered pages are used instead (your country first, then the others), for fewer 1015 errors.
-- **Smarter best basket**: one card can be split across several sellers when it's cheaper or when nobody has enough copies — taken into account in the calculation itself.
-- **Minimum condition for all cards** with coloured badges (EX also accepts NM and MT), a select-all checkbox, a "Delete selection" button, and categories removed automatically once emptied.
-- **Loading screen** while the basket is calculated, and **click a card image** to zoom in.
-- **Activity log** in Settings (each line kept 7 days) to attach to a bug report on Discord.
-- **Interactive tutorial** on first launch (replay it from Settings).
-- Default sellers: countries with **no customs fees** to you.
+- **🛒 "Add all" = clean cart**: first removes from your Cardmarket cart what isn't in the best basket (list shown, you confirm), keeps what's already there and only adds what's missing.
+- **🗑 Empty my Cardmarket cart**: one button that clicks Cardmarket's own "Empty cart" and checks the cart is really empty.
+- **🛒 Solid adding**: if an offer is gone at the moment it's added, the best other offer (shipping included) is added right away. The price gap is shown at the end.
+- **🔁 Alternatives without rescanning**: for cards not added to the cart, the best other offer already found by the scan is suggested with its price gap, and added in one click.
+- **💶 Updated total**: once everything is in your cart, "Total to pay" (and your savings) include the replaced offers, with the old total below.
+- **✨ Foil (Magic)**: for Magic cards that exist in foil, choose "foil or not", "no foil" or "foil only". The foil filter of the Cardmarket page is kept when you add the card.
+- **🃏 Right Magic edition**: MTGGoldfish import keeps each card's edition (e.g. Invasion or The List).
 
-*1.31: a ✕ to skip the whole tutorial. 1.32: with "Always tracked letter" on, the Cardmarket comparison also counts tracked shipping, so both baskets follow the same rules; "Min. sales" filter removed; on Firefox, a button to allow access to Cardmarket if it's missing. 1.33: on Cardmarket's Shopping Wizard results page, the extension adds "Shipping as tracked letter" and "Total with tracked letters" (each seller's country and price are checked against the official rates), and the comparison reads that total. 1.34: in deck import (cheapest mode), tick "Keep original" on any card to keep the deck's version, change the number of copies or remove a card before adding the deck to your list; in Best basket, switch the card language without rescanning (among the languages already scanned). 1.35: deeper best-basket search (exact on small lists, a few more seconds on big ones, never a worse result), and when you pick a language, cards whose scan may have missed offers in that language are rescanned for that language only. 1.40: deck import for Yu-Gi-Oh! (YGOPRODeck), Pokémon (Limitless TCG) and Magic (MTGGoldfish); the best basket is only recalculated when something changed; the Shopping Wizard's sellers are added to the calculation after a comparison; new "Check sellers' stock" button (levels 1 to 5, estimated wait, progress bar and Stop button) looks in the sellers' stock for your other cards to group orders; warning when the Shopping Wizard is missing some of your cards; faster Long scan, now the default; adjustable pages per minute; full version history in the app. **1.41**: foil option for Magic cards that exist in foil (the foil filter of the Cardmarket page is kept when you add a card); the right Magic edition on MTGGoldfish imports; "Add all" first cleans your Cardmarket cart of what isn't in the best basket (you confirm), keeps what's already there and only adds what's missing; if an offer is gone while adding, the best other offer (shipping included) is added right away; one-click alternatives for cards not added, with the price gap, without rescanning; "Empty my Cardmarket cart" button; the "Total to pay" is updated once everything is in your cart, with the old total below.*
+<details>
+<summary>🕘 Previous versions</summary>
+
+- **1.40**: deck import for Yu-Gi-Oh! (YGOPRODeck), Pokémon (Limitless TCG) and Magic (MTGGoldfish); "Check sellers' stock" (levels 1 to 5, estimated wait, progress bar, Stop button) looks in the Shopping Wizard sellers' stock for your other cards to group orders; warning when the Shopping Wizard is missing some of your cards; faster Long scan, now the default; adjustable pages per minute; the best basket is only recalculated when something changed; full version history in the app.
+- **1.35**: deeper best-basket search (exact on small lists, never a worse result); when you pick a language, cards that may have missed offers in that language are rescanned for that language only.
+- **1.34**: deck import (cheapest mode): "Keep original" per card, editable number of copies, remove a card; switch the card language in Best basket without rescanning.
+- **1.33**: on Cardmarket's Shopping Wizard results, "Shipping as tracked letter" and "Total with tracked letters", used by the comparison.
+- **1.32**: with "Always tracked letter" on, the Cardmarket comparison also counts tracked shipping; "Min. sales" filter removed; on Firefox, a button to allow access to Cardmarket if it's missing.
+- **1.31**: a ✕ to skip the whole tutorial.
+- **1.3**: deck import (Piltover Archive, Riftdecks, up to 5 decks); compare with Cardmarket's Shopping Wizard; 3 scan modes (Fast, Medium, Long) using filtered pages for fewer 1015 errors; one card split across several sellers when cheaper; minimum condition for all cards, select all and "Delete selection"; loading screen and card zoom; activity log; interactive tutorial; default sellers from countries with no customs fees.
+
+</details>
 
 ## 📦 Install on Chrome (from GitHub)
 
